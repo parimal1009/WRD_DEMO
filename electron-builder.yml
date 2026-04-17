@@ -1,0 +1,19 @@
+appId: com.zedprodigital.voicedocai
+productName: VoiceDoc AI
+directories:
+  output: dist-electron
+win:
+  target: nsis
+  icon: assets/icon.ico
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true
+files:
+  - "dist/**/*"
+  - "electron.cjs"
+  - "preload.cjs"
+  - "package.json"
+  - "node_modules/**/*"
+extraFiles:
+  - from: "src/assets/forms"
+    to: "resources/forms"
