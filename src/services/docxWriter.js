@@ -52,7 +52,13 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
         if (matchedNodes.has(node)) continue;
         const nodeText = normalize(node.textContent);
         if (nodeText && targetText && (nodeText.includes(targetText) || targetText.includes(nodeText))) {
-          targetNode = node;
+          // ENSURE TARGET IS ALWAYS A PARAGRAPH! Word corrupts if w:r is added directly inside a w:tc.
+          if (node.nodeName.toLowerCase() === 'w:tc') {
+            const innerP = node.getElementsByTagName('w:p');
+            targetNode = innerP.length > 0 ? innerP[innerP.length - 1] : node;
+          } else {
+            targetNode = node;
+          }
           matchedNodes.add(node);
           break;
         }
@@ -85,25 +91,38 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
     }
 
     if (targetNode) {
-      // Create elements without namespace arguments to prevent XMLSerializer from injecting redundant inline `xmlns:w` 
-      // attributes which instantly corrupt the DOCX schema parsers in strict versions of Microsoft Word.
-      const run = xmlDoc.createElement("w:r");
+      if (targetNode.nodeName.toLowerCase() === 'w:tc') {
+        const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        const newP = xmlDoc.createElementNS(wNS, "w:p");
+        targetNode.appendChild(newP);
+        targetNode = newP;
+      }
 
-      const rPr = xmlDoc.createElement("w:rPr");
-      const color = xmlDoc.createElement("w:color");
-      color.setAttribute("w:val", "1D4ED8");
-      const b = xmlDoc.createElement("w:b");
-
-      rPr.appendChild(b);
-      rPr.appendChild(color);
-      run.appendChild(rPr);
-
-      const t = xmlDoc.createElement("w:t");
-      t.setAttribute("xml:space", "preserve");
-      t.textContent = ` ${textToInsert}`;
-      run.appendChild(t);
-
-      targetNode.appendChild(run);
+      const runs = targetNode.getElementsByTagName('w:t');
+      if (runs.length > 0) {
+        // Preferred explicit text node extension mapping (avoids elements entirely)
+        const lastRun = runs[runs.length - 1];
+        lastRun.textContent = lastRun.textContent + ` ${textToInsert}`;
+      } else {
+        // Safe namespace fallback for blank fields
+        const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        const run = xmlDoc.createElementNS(wNS, "w:r");
+        const rPr = xmlDoc.createElementNS(wNS, "w:rPr");
+        const b = xmlDoc.createElementNS(wNS, "w:b");
+        const color = xmlDoc.createElementNS(wNS, "w:color");
+        color.setAttribute("w:val", "1D4ED8");
+        
+        rPr.appendChild(b);
+        rPr.appendChild(color);
+        run.appendChild(rPr);
+        
+        const t = xmlDoc.createElementNS(wNS, "w:t");
+        t.setAttribute("xml:space", "preserve");
+        t.textContent = ` ${textToInsert}`;
+        
+        run.appendChild(t);
+        targetNode.appendChild(run);
+      }
     }
   }
 
