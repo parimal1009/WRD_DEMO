@@ -81,6 +81,10 @@ export function useAudioRecorder() {
       }
       setDuration(0);
       chunksRef.current = [];
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
 
       const stream = await navigator.mediaDevices.getUserMedia({ 
         audio: {
@@ -102,14 +106,19 @@ export function useAudioRecorder() {
       analyserRef.current = analyser;
 
       // Determine supported mime types
-      let mimeType = 'audio/webm;codecs=opus';
-      if (!MediaRecorder.isTypeSupported(mimeType)) {
-        mimeType = 'audio/webm';
-        if (!MediaRecorder.isTypeSupported(mimeType)) {
-          mimeType = 'audio/ogg;codecs=opus';
-          if (!MediaRecorder.isTypeSupported(mimeType)) {
-            mimeType = '';
-          }
+      let mimeType = '';
+      const types = [
+        'audio/webm;codecs=opus',
+        'audio/webm',
+        'audio/mp4',
+        'audio/mpeg',
+        'audio/ogg;codecs=opus',
+        'audio/x-m4a'
+      ];
+      for (const t of types) {
+        if (MediaRecorder.isTypeSupported(t)) {
+          mimeType = t;
+          break;
         }
       }
 
@@ -123,11 +132,20 @@ export function useAudioRecorder() {
       };
 
       recorder.onstop = () => {
-        const blob = new Blob(chunksRef.current, { type: mimeType || 'audio/webm' });
+        const actualMimeType = mimeType || recorder.mimeType || 'audio/mp4';
+        const blob = new Blob(chunksRef.current, { type: actualMimeType });
         setAudioBlob(blob);
         const url = URL.createObjectURL(blob);
         setAudioUrl(url);
         
+        // Ensure UI resets flawlessly in strict auto-stoppers (iOS native Safari etc)
+        setIsRecording(false);
+        setIsPaused(false);
+        if (timerRef.current) {
+          clearInterval(timerRef.current);
+          timerRef.current = null;
+        }
+
         // Clean up stream
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(t => t.stop());
@@ -199,15 +217,25 @@ export function useAudioRecorder() {
   }, [duration, startAnimationLoop]);
 
   const resetRecording = useCallback(() => {
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      try { mediaRecorderRef.current.stop(); } catch(e){}
+    }
     if (audioUrl) {
       URL.revokeObjectURL(audioUrl);
     }
+    if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    stopAnimationLoop();
     setAudioBlob(null);
     setAudioUrl(null);
     setDuration(0);
     setError(null);
+    setIsRecording(false);
+    setIsPaused(false);
     chunksRef.current = [];
-  }, [audioUrl]);
+  }, [audioUrl, stopAnimationLoop]);
 
   const formatDuration = useCallback((secs) => {
     const m = Math.floor(secs / 60).toString().padStart(2, '0');

@@ -43,8 +43,13 @@ export async function transcribeAudio(audioBlob, language = 'en', apiKey = '') {
   }
 
   return withRetry(async () => {
+    let extension = 'webm';
+    if (audioBlob.type.includes('mp4') || audioBlob.type.includes('m4a')) extension = 'mp4';
+    else if (audioBlob.type.includes('ogg')) extension = 'ogg';
+    else if (audioBlob.type.includes('mpeg')) extension = 'mp3';
+    
     const formData = new FormData();
-    formData.append('file', audioBlob, 'recording.webm');
+    formData.append('file', audioBlob, `recording.${extension}`);
     formData.append('model', 'whisper-large-v3-turbo');
     if (language && language !== 'auto') {
       formData.append('language', language);
