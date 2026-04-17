@@ -38,7 +38,7 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
 
     const labelText = fieldMeta.label || '';
     const isSyntheticLabel = labelText.startsWith('Paragraph ') || labelText.startsWith('Cell ') || labelText.startsWith('List Item ');
-    
+
     // Normalize string to match content inside XML structure accurately
     const normalize = (str) => str.replace(/\s+/g, ' ').trim().substring(0, 45);
     const targetText = normalize(labelText);
@@ -81,36 +81,44 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
 
     // 3. Absolute Last Fallback: Just attach to end of document
     if (!targetNode && paragraphs.length > 0) {
-      targetNode = paragraphs[paragraphs.length - 1]; 
+      targetNode = paragraphs[paragraphs.length - 1];
     }
 
     if (targetNode) {
-      // 4. Inject standard DOCX XML string formats (w:r -> w:t) explicitly appended to matched position
-      const ns = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-      const run = xmlDoc.createElementNS(ns, "w:r");
-      
-      const rPr = xmlDoc.createElementNS(ns, "w:rPr");
-      const color = xmlDoc.createElementNS(ns, "w:color");
-      color.setAttribute("w:val", "1D4ED8"); // Output the text explicitly in blue to emphasize it
-      
-      const b = xmlDoc.createElementNS(ns, "w:b"); // Add bold to insertion natively
-      
+      // Create elements without namespace arguments to prevent XMLSerializer from injecting redundant inline `xmlns:w` 
+      // attributes which instantly corrupt the DOCX schema parsers in strict versions of Microsoft Word.
+      const run = xmlDoc.createElement("w:r");
+
+      const rPr = xmlDoc.createElement("w:rPr");
+      const color = xmlDoc.createElement("w:color");
+      color.setAttribute("w:val", "1D4ED8");
+      const b = xmlDoc.createElement("w:b");
+
       rPr.appendChild(b);
       rPr.appendChild(color);
       run.appendChild(rPr);
-      
-      const t = xmlDoc.createElementNS(ns, "w:t");
+
+      const t = xmlDoc.createElement("w:t");
       t.setAttribute("xml:space", "preserve");
       t.textContent = ` ${textToInsert}`;
       run.appendChild(t);
-      
+
       targetNode.appendChild(run);
     }
   }
 
   // 5. Serialize the patched XML tree right back into a string 
   const serializer = new XMLSerializer();
-  const newXmlString = serializer.serializeToString(xmlDoc);
+  let newXmlString = serializer.serializeToString(xmlDoc);
+
+  // Microsoft Word strictly requires the XML prologue. Browser serializers silently strip this during parsing!
+  // If we don't prepend it, Word says "Word experienced an error trying to open the file."
+  if (!newXmlString.startsWith('<?xml')) {
+    newXmlString = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + newXmlString;
+  }
+
+  // Clean up any stray root namespaces that might have leaked if the DOM parser messed with them
+  newXmlString = newXmlString.replace(/ xmlns:w="http:\/\/schemas\.openxmlformats\.org\/wordprocessingml\/2006\/main"/g, '');
 
   // 6. Overwrite the file inside the zip memory buffer
   zip.file('word/document.xml', newXmlString);

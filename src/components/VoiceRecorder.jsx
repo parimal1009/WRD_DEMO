@@ -83,13 +83,24 @@ export default function VoiceRecorder() {
       },
     });
 
-    notify('Text inserted into document', 'success');
+    const fieldMapping = Object.entries(state.document.fieldMap || {});
+    // Sort array identically to DOM mapping if indices exist
+    fieldMapping.sort((a, b) => a[1].index - b[1].index);
+    const keys = fieldMapping.map(f => f[0]);
+    const currentIndex = keys.indexOf(activeFieldId);
+    
+    let nextFieldId = null;
+    if (currentIndex >= 0 && currentIndex < keys.length - 1) {
+      nextFieldId = keys[currentIndex + 1];
+    }
 
-    // Reset for next input
-    resetRecording();
-    resetTranscription();
-    setManualText('');
-    dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
+    if (nextFieldId) {
+      dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: nextFieldId });
+      notify('Inserted text and jumped to next field', 'success');
+    } else {
+      dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
+      notify('Text inserted. Form complete.', 'success');
+    }
   };
 
   const handleDiscard = () => {
@@ -97,6 +108,13 @@ export default function VoiceRecorder() {
     resetTranscription();
     setManualText('');
     dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
+  };
+
+  const handleKeyDown = (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleManualInsert();
+    }
   };
 
   const handleManualInsert = () => {
@@ -380,6 +398,20 @@ export default function VoiceRecorder() {
               >
                 N/A
               </button>
+              <button
+                onClick={() => handleInsert('✔')}
+                className="flex-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: Tick mark"
+              >
+                ✔ Tick
+              </button>
+              <button
+                onClick={() => handleInsert('✗')}
+                className="flex-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: Cross mark"
+              >
+                ✗ Cross
+              </button>
             </div>
 
             <textarea
@@ -392,6 +424,7 @@ export default function VoiceRecorder() {
                          placeholder-white/20 transition-all"
               id="manual-text-input"
               autoFocus
+              onKeyDown={handleKeyDown}
             />
 
             {/* Character count */}
@@ -439,10 +472,11 @@ export default function VoiceRecorder() {
             <button
               onClick={handleDiscard}
               className="w-9 h-9 rounded-lg bg-navy-700 border border-white/5 flex items-center justify-center
-                         hover:bg-red-500/20 hover:border-red-500/20 transition-all"
-              title="Discard"
+                         hover:bg-red-500/20 hover:border-red-500/20 transition-all text-white/40 hover:text-red-400"
+              title="Discard and Close Panel"
             >
-              <svg className="w-4 h-4 text-white/40" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <span className="text-xs font-medium mr-1 uppercase" style={{fontSize: '9px'}}>Close</span>
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
