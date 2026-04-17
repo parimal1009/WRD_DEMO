@@ -132,7 +132,7 @@ export function useAudioRecorder() {
       };
 
       recorder.onstop = () => {
-        const actualMimeType = mimeType || recorder.mimeType || 'audio/mp4';
+        const actualMimeType = mimeType || (recorder.mimeType !== "" ? recorder.mimeType : 'audio/webm');
         const blob = new Blob(chunksRef.current, { type: actualMimeType });
         setAudioBlob(blob);
         const url = URL.createObjectURL(blob);
@@ -160,7 +160,8 @@ export function useAudioRecorder() {
         }
       };
 
-      recorder.start(250); // Collect data every 250ms
+      // Start recording natively without timeslicing for cross-browser WebKit support
+      recorder.start(); 
       setIsRecording(true);
       setIsPaused(false);
 

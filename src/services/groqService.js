@@ -42,6 +42,10 @@ export async function transcribeAudio(audioBlob, language = 'en', apiKey = '') {
     throw new Error('Groq API key not configured. Please set your API key in Settings.');
   }
 
+  if (!audioBlob || audioBlob.size === 0) {
+    throw new Error('Audio recording failed. The captured file is 0 bytes. Ensure your browser has microphone permissions active.');
+  }
+
   return withRetry(async () => {
     let extension = 'webm';
     if (audioBlob.type.includes('mp4') || audioBlob.type.includes('m4a')) extension = 'mp4';
