@@ -2,10 +2,11 @@
  * DOCX Writer Service
  * Inserts text into an existing .docx file using JSZip + raw string splicing.
  *
- * Key design: the field map indices are derived from the same raw XML structure,
- * so tableCells[index] and paragraphs[index] point to the correct nodes.
- * We use DOMParser read-only to find paragraph positions, then splice text
- * directly into the raw XML string to avoid all browser serialization bugs.
+ * Architecture:
+ * The docxParser mathematically mapped every clickable visual element to a flat 
+ * RAW paragraph index (fieldMeta.index). We find all paragraph ends in the raw XML 
+ * and splice the user text precisely at that matched paragraph index.
+ * No XML serializers used. Zero data corruption.
  */
 import JSZip from 'jszip';
 
@@ -14,14 +15,7 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
   const zip = await jszip.loadAsync(originalBuffer);
   const xmlString = await zip.file('word/document.xml').async('text');
 
-  // 1. Parse XML read-only to resolve field positions to global paragraph indices
-  const parser = new DOMParser();
-  const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
-
-  const allParagraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
-  const allCells = Array.from(xmlDoc.getElementsByTagName('w:tc'));
-
-  // Build injection tasks: each maps a global paragraph index -> text to insert
+  // Build injection tasks
   const injectionTasks = [];
 
   for (const [fieldId, textToInsert] of Object.entries(insertions)) {
@@ -29,37 +23,13 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
 
     const fieldMeta = fieldMap[fieldId];
     if (!fieldMeta) continue;
-    if (fieldMeta.index < 0) continue; // Unmatched field, skip
+    if (fieldMeta.index === undefined || fieldMeta.index < 0) continue;
 
-    let targetParagraphIndex = -1;
-
-    if (fieldMeta.type === 'table-cell') {
-      // For table cells, use the xmlParagraphStart to find the last paragraph in the cell
-      if (fieldMeta.xmlParagraphStart !== undefined && fieldMeta.xmlParagraphCount !== undefined) {
-        // Target the last paragraph in this cell
-        targetParagraphIndex = fieldMeta.xmlParagraphStart + fieldMeta.xmlParagraphCount - 1;
-      } else {
-        // Fallback: use the cell index to find the cell, then its last paragraph
-        const cell = allCells[fieldMeta.index];
-        if (cell) {
-          const cellParas = cell.getElementsByTagName('w:p');
-          if (cellParas.length > 0) {
-            const lastPara = cellParas[cellParas.length - 1];
-            targetParagraphIndex = allParagraphs.indexOf(lastPara);
-          }
-        }
-      }
-    } else {
-      // Paragraph type — index IS the global paragraph index
-      targetParagraphIndex = fieldMeta.index;
-    }
-
-    if (targetParagraphIndex >= 0 && targetParagraphIndex < allParagraphs.length) {
-      injectionTasks.push({ pIndex: targetParagraphIndex, textToInsert });
-    }
+    // Both table cells and regular paragraphs now store the exact P index in fieldMeta.index
+    injectionTasks.push({ pIndex: fieldMeta.index, textToInsert });
   }
 
-  // 2. Find all </w:p> and self-closing <w:p.../> positions in the raw XML string
+  // Find all </w:p> and self-closing <w:p.../> positions in the raw XML string
   const paragraphEnds = [];
   const regex = /(<\/w:p>|<w:p(?: [^>]*)?\/>)/g;
   let match;
@@ -71,7 +41,7 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
     });
   }
 
-  // 3. Group tasks by splice position, then apply back-to-front
+  // Group tasks by splice position, then apply back-to-front
   const groupedTasks = {};
   for (const task of injectionTasks) {
     const pEnd = paragraphEnds[task.pIndex];
@@ -108,15 +78,12 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
     outputXml = outputXml.substring(0, splice.splicePos) + splice.payload + outputXml.substring(splice.spliceEndPos);
   }
 
-  // 4. Repackage into zip — no serialization, no namespace corruption
+  // Repackage into zip
   zip.file('word/document.xml', outputXml);
   const base64 = await zip.generateAsync({ type: 'base64' });
   return base64;
 }
 
-/**
- * Escape special XML characters in user-entered text.
- */
 function escapeXml(str) {
   return str
     .replace(/&/g, '&amp;')
