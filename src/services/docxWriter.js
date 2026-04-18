@@ -1,149 +1,112 @@
 /**
  * DOCX Writer Service
  * Modifies an existing .docx file to insert transcriptions using JSZip.
- * By directly editing word/document.xml, we preserve EXACT formatting, tables, and layouts length-for-length!
+ * By securely splicing string offsets safely instead of risking native browser XMLSerializer,
+ * we strictly preserve EXACT layout structures unconditionally.
  */
 import JSZip from 'jszip';
 
-/**
- * Insert text into a docx at specified field positions.
- * This reads the original XML and appends text directly into the nodes, preserving everything.
- *
- * @param {ArrayBuffer} originalBuffer - Original .docx file buffer
- * @param {Object} insertions - Map of fieldId -> text to insert
- * @param {Object} fieldMap - Field map from parser with position info
- * @returns {Promise<string>} Modified .docx as base64 string
- */
 export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
-  // 1. Load the original file directly into a ZIP archive mapper
   const jszip = new JSZip();
   const zip = await jszip.loadAsync(originalBuffer);
-
-  // 2. Extract the core structural XML document
   const xmlString = await zip.file('word/document.xml').async('text');
 
-  // 3. Parse XML using the browser's DOM parser natively
+  // 1. Utilize DOMParser STRICTLY for reliable read-only path finding, avoiding modifying schema layouts!
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
 
   const paragraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
   const tableCells = Array.from(xmlDoc.getElementsByTagName('w:tc'));
   const matchedNodes = new Set();
+  
+  // Tasks mapping the global paragraph index to the injected payload text
+  const injectionTasks = [];
 
   for (const [fieldId, textToInsert] of Object.entries(insertions)) {
     if (!textToInsert) continue;
 
     const fieldMeta = fieldMap[fieldId];
     if (!fieldMeta) continue;
-
-    const labelText = fieldMeta.label || '';
-    const isSyntheticLabel = labelText.startsWith('Paragraph ') || labelText.startsWith('Cell ') || labelText.startsWith('List Item ');
-
-    // Normalize string to match content inside XML structure accurately
-    const normalize = (str) => str.replace(/\s+/g, ' ').trim().substring(0, 45);
-    const targetText = normalize(labelText);
-
+    
     let targetNode = null;
 
-    // 1. If we have real text, Linearly scan for fuzzy matches first
-    if (!isSyntheticLabel && targetText.length > 0) {
-      const searchPool = fieldMeta.type === 'table-cell' ? tableCells : paragraphs;
-      for (const node of searchPool) {
-        if (matchedNodes.has(node)) continue;
-        const nodeText = normalize(node.textContent);
-        if (nodeText && targetText && (nodeText.includes(targetText) || targetText.includes(nodeText))) {
-          // ENSURE TARGET IS ALWAYS A PARAGRAPH! Word corrupts if w:r is added directly inside a w:tc.
-          if (node.nodeName.toLowerCase() === 'w:tc') {
-            const innerP = node.getElementsByTagName('w:p');
-            targetNode = innerP.length > 0 ? innerP[innerP.length - 1] : node;
-          } else {
-            targetNode = node;
-          }
-          matchedNodes.add(node);
-          break;
-        }
+    // Utilize strict architectural mapping. Mammoth's field model extracts global nodes incrementally.
+    if (fieldMeta.type === 'table-cell') {
+      const cell = tableCells[fieldMeta.index];
+      if (cell) {
+        const cellParas = cell.getElementsByTagName('w:p');
+        if (cellParas.length > 0) targetNode = cellParas[cellParas.length - 1];
       }
+    } else {
+      // Map directly against the native XML DOM
+      const p = paragraphs[fieldMeta.index];
+      if (p) targetNode = p;
     }
 
-    // 2. Fallback: Map by index array exactly if text matching fails or if the cell was originally totally empty
-    if (!targetNode) {
-      if (fieldMeta.type === 'table-cell') {
-        const cell = tableCells[fieldMeta.index];
-        if (cell) {
-          // Inside a table cell, we must append to its intrinsic <w:p>
-          const cellParas = cell.getElementsByTagName('w:p');
-          if (cellParas.length > 0) {
-            targetNode = cellParas[cellParas.length - 1];
-          } else {
-            targetNode = cell; // Very rare, but fallback
-          }
-        }
-      } else {
-        // Direct paragraph array mapping
-        const p = paragraphs[fieldMeta.index];
-        if (p) targetNode = p;
-      }
-    }
-
-    // 3. Absolute Last Fallback: Just attach to end of document
     if (!targetNode && paragraphs.length > 0) {
       targetNode = paragraphs[paragraphs.length - 1];
     }
 
+    // Correlate the target DOM path cleanly back to its exact offset in the layout depth!
     if (targetNode) {
-      if (targetNode.nodeName.toLowerCase() === 'w:tc') {
-        const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        const newP = xmlDoc.createElementNS(wNS, "w:p");
-        targetNode.appendChild(newP);
-        targetNode = newP;
-      }
-
-      const runs = targetNode.getElementsByTagName('w:t');
-      if (runs.length > 0) {
-        // Preferred explicit text node extension mapping (avoids elements entirely)
-        const lastRun = runs[runs.length - 1];
-        lastRun.textContent = lastRun.textContent + ` ${textToInsert}`;
-      } else {
-        // Safe namespace fallback for blank fields
-        const wNS = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        const run = xmlDoc.createElementNS(wNS, "w:r");
-        const rPr = xmlDoc.createElementNS(wNS, "w:rPr");
-        const b = xmlDoc.createElementNS(wNS, "w:b");
-        const color = xmlDoc.createElementNS(wNS, "w:color");
-        color.setAttribute("w:val", "1D4ED8");
-        
-        rPr.appendChild(b);
-        rPr.appendChild(color);
-        run.appendChild(rPr);
-        
-        const t = xmlDoc.createElementNS(wNS, "w:t");
-        t.setAttribute("xml:space", "preserve");
-        t.textContent = ` ${textToInsert}`;
-        
-        run.appendChild(t);
-        targetNode.appendChild(run);
+      const pIndex = paragraphs.indexOf(targetNode);
+      if (pIndex !== -1) {
+         injectionTasks.push({ pIndex, textToInsert });
       }
     }
   }
 
-  // 5. Serialize the patched XML tree right back into a string 
-  const serializer = new XMLSerializer();
-  let newXmlString = serializer.serializeToString(xmlDoc);
-
-  // Microsoft Word strictly requires the XML prologue. Browser serializers silently strip this during parsing!
-  // If we don't prepend it, Word says "Word experienced an error trying to open the file."
-  if (!newXmlString.startsWith('<?xml')) {
-    newXmlString = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n' + newXmlString;
+  // 2. Scan the identical pristine string algorithmically without utilizing the native XML Serializer 
+  const paragraphEnds = [];
+  const regex = /(<\/w:p>|<w:p(?: [^>]*)?\/>)/g;
+  let match;
+  while ((match = regex.exec(xmlString)) !== null) {
+      paragraphEnds.push({
+          index: match.index,
+          length: match[0].length,
+          isSelfClosing: match[0].endsWith('/>')
+      });
   }
 
-  // Clean up any stray root namespaces that might have leaked if the DOM parser messed with them
-  newXmlString = newXmlString.replace(/ xmlns:w="http:\/\/schemas\.openxmlformats\.org\/wordprocessingml\/2006\/main"/g, '');
+  // 3. Reverse-Sort the payloads explicitly and modify the string via index slicing natively!
+  const groupedTasks = {};
+  for (const task of injectionTasks) {
+      const pMatch = paragraphEnds[task.pIndex];
+      // Skip heavily mangled nested fields that evade exact traversal mappings in rare documents
+      if (!pMatch) continue; 
+      
+      const textNodeStr = `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr><w:t xml:space="preserve"> ${task.textToInsert}</w:t></w:r>`;
+      let replaceStart, replaceEnd, payload;
+      
+      if (pMatch.isSelfClosing) {
+         // Seamlessly inject and wrap empty cell declarations 
+         replaceStart = pMatch.index + pMatch.length - 2; 
+         replaceEnd = pMatch.index + pMatch.length; 
+         payload = `>${textNodeStr}</w:p>`;
+      } else {
+         // Insert explicitly directly before paragraph closes
+         replaceStart = pMatch.index;
+         replaceEnd = pMatch.index;
+         payload = textNodeStr;
+      }
+      
+      // Combine multiple overlapping inserts directly onto the existing index
+      if (!groupedTasks[replaceStart]) {
+         groupedTasks[replaceStart] = { replaceStart, replaceEnd, payload: '' };
+      }
+      groupedTasks[replaceStart].payload += payload;
+  }
+  
+  // Enforce mathematically stable back-to-front array slicing
+  const finalSplices = Object.values(groupedTasks).sort((a, b) => b.replaceStart - a.replaceStart);
 
-  // 6. Overwrite the file inside the zip memory buffer
-  zip.file('word/document.xml', newXmlString);
+  let pristineXmlString = xmlString;
+  for (const splice of finalSplices) {
+      pristineXmlString = pristineXmlString.substring(0, splice.replaceStart) + splice.payload + pristineXmlString.substring(splice.replaceEnd);
+  }
 
-  // 7. Flush memory stream back directly into the expected Base64 format for the UI IPC handler
+  // 4. Repackage the zip archive instantly completely bypassing all browser DOMSerializer algorithms!
+  zip.file('word/document.xml', pristineXmlString);
   const base64 = await zip.generateAsync({ type: 'base64' });
   return base64;
 }
-
