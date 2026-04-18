@@ -12,8 +12,8 @@ if (typeof window !== 'undefined' && !window.electronAPI) {
       const data = localStorage.getItem(key);
       return data ? JSON.parse(data) : null;
     },
-    saveSecureSetting: async (key, val) => localStorage.setItem(key, val),
-    loadSecureSetting: async (key) => localStorage.getItem(key),
+    saveSecureSetting: async (key, val) => localStorage.setItem(`_secure_${key}`, val),
+    loadSecureSetting: async (key) => localStorage.getItem(`_secure_${key}`),
 
     // Mock filesystem write with standard Web Downloads
     saveFile: async (filename) => filename, // return mock path
@@ -44,7 +44,7 @@ if (typeof window !== 'undefined' && !window.electronAPI) {
       setTimeout(() => {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
-      }, 100);
+      }, 200);
     },
 
     // Mock filesystem read with standard Web File Input
@@ -78,4 +78,40 @@ if (typeof window !== 'undefined' && !window.electronAPI) {
     },
     downloadFile: async (url) => url // not fully mocked, placeholder
   };
+
+  // ── Drag & Drop support ──────────────────────────────────────────────
+  // Allow users to drag .docx files directly onto the browser window
+  document.addEventListener('DOMContentLoaded', () => {
+    document.body.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.body.classList.add('drag-active');
+    });
+
+    document.body.addEventListener('dragleave', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.body.classList.remove('drag-active');
+    });
+
+    document.body.addEventListener('drop', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      document.body.classList.remove('drag-active');
+
+      const file = e.dataTransfer?.files?.[0];
+      if (!file || !file.name.endsWith('.docx')) return;
+
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        const base64 = ev.target.result.split(',')[1];
+        webFileCache[file.name] = base64;
+        // Dispatch a custom event the app can listen for
+        window.dispatchEvent(new CustomEvent('voicedoc:file-drop', { 
+          detail: { fileName: file.name } 
+        }));
+      };
+      reader.readAsDataURL(file);
+    });
+  });
 }

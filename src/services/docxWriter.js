@@ -1,8 +1,11 @@
 /**
  * DOCX Writer Service
- * Modifies an existing .docx file to insert transcriptions using JSZip.
- * By securely splicing string offsets safely instead of risking native browser XMLSerializer,
- * we strictly preserve EXACT layout structures unconditionally.
+ * Inserts text into an existing .docx file using JSZip + raw string splicing.
+ *
+ * Key design: the field map indices are derived from the same raw XML structure,
+ * so tableCells[index] and paragraphs[index] point to the correct nodes.
+ * We use DOMParser read-only to find paragraph positions, then splice text
+ * directly into the raw XML string to avoid all browser serialization bugs.
  */
 import JSZip from 'jszip';
 
@@ -11,15 +14,14 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
   const zip = await jszip.loadAsync(originalBuffer);
   const xmlString = await zip.file('word/document.xml').async('text');
 
-  // 1. Utilize DOMParser STRICTLY for reliable read-only path finding, avoiding modifying schema layouts!
+  // 1. Parse XML read-only to resolve field positions to global paragraph indices
   const parser = new DOMParser();
   const xmlDoc = parser.parseFromString(xmlString, 'text/xml');
 
-  const paragraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
-  const tableCells = Array.from(xmlDoc.getElementsByTagName('w:tc'));
-  const matchedNodes = new Set();
-  
-  // Tasks mapping the global paragraph index to the injected payload text
+  const allParagraphs = Array.from(xmlDoc.getElementsByTagName('w:p'));
+  const allCells = Array.from(xmlDoc.getElementsByTagName('w:tc'));
+
+  // Build injection tasks: each maps a global paragraph index -> text to insert
   const injectionTasks = [];
 
   for (const [fieldId, textToInsert] of Object.entries(insertions)) {
@@ -27,86 +29,99 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
 
     const fieldMeta = fieldMap[fieldId];
     if (!fieldMeta) continue;
-    
-    let targetNode = null;
+    if (fieldMeta.index < 0) continue; // Unmatched field, skip
 
-    // Utilize strict architectural mapping. Mammoth's field model extracts global nodes incrementally.
+    let targetParagraphIndex = -1;
+
     if (fieldMeta.type === 'table-cell') {
-      const cell = tableCells[fieldMeta.index];
-      if (cell) {
-        const cellParas = cell.getElementsByTagName('w:p');
-        if (cellParas.length > 0) targetNode = cellParas[cellParas.length - 1];
+      // For table cells, use the xmlParagraphStart to find the last paragraph in the cell
+      if (fieldMeta.xmlParagraphStart !== undefined && fieldMeta.xmlParagraphCount !== undefined) {
+        // Target the last paragraph in this cell
+        targetParagraphIndex = fieldMeta.xmlParagraphStart + fieldMeta.xmlParagraphCount - 1;
+      } else {
+        // Fallback: use the cell index to find the cell, then its last paragraph
+        const cell = allCells[fieldMeta.index];
+        if (cell) {
+          const cellParas = cell.getElementsByTagName('w:p');
+          if (cellParas.length > 0) {
+            const lastPara = cellParas[cellParas.length - 1];
+            targetParagraphIndex = allParagraphs.indexOf(lastPara);
+          }
+        }
       }
     } else {
-      // Map directly against the native XML DOM
-      const p = paragraphs[fieldMeta.index];
-      if (p) targetNode = p;
+      // Paragraph type — index IS the global paragraph index
+      targetParagraphIndex = fieldMeta.index;
     }
 
-    if (!targetNode && paragraphs.length > 0) {
-      targetNode = paragraphs[paragraphs.length - 1];
-    }
-
-    // Correlate the target DOM path cleanly back to its exact offset in the layout depth!
-    if (targetNode) {
-      const pIndex = paragraphs.indexOf(targetNode);
-      if (pIndex !== -1) {
-         injectionTasks.push({ pIndex, textToInsert });
-      }
+    if (targetParagraphIndex >= 0 && targetParagraphIndex < allParagraphs.length) {
+      injectionTasks.push({ pIndex: targetParagraphIndex, textToInsert });
     }
   }
 
-  // 2. Scan the identical pristine string algorithmically without utilizing the native XML Serializer 
+  // 2. Find all </w:p> and self-closing <w:p.../> positions in the raw XML string
   const paragraphEnds = [];
   const regex = /(<\/w:p>|<w:p(?: [^>]*)?\/>)/g;
   let match;
   while ((match = regex.exec(xmlString)) !== null) {
-      paragraphEnds.push({
-          index: match.index,
-          length: match[0].length,
-          isSelfClosing: match[0].endsWith('/>')
-      });
+    paragraphEnds.push({
+      index: match.index,
+      length: match[0].length,
+      isSelfClosing: match[0].endsWith('/>')
+    });
   }
 
-  // 3. Reverse-Sort the payloads explicitly and modify the string via index slicing natively!
+  // 3. Group tasks by splice position, then apply back-to-front
   const groupedTasks = {};
   for (const task of injectionTasks) {
-      const pMatch = paragraphEnds[task.pIndex];
-      // Skip heavily mangled nested fields that evade exact traversal mappings in rare documents
-      if (!pMatch) continue; 
-      
-      const textNodeStr = `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr><w:t xml:space="preserve"> ${task.textToInsert}</w:t></w:r>`;
-      let replaceStart, replaceEnd, payload;
-      
-      if (pMatch.isSelfClosing) {
-         // Seamlessly inject and wrap empty cell declarations 
-         replaceStart = pMatch.index + pMatch.length - 2; 
-         replaceEnd = pMatch.index + pMatch.length; 
-         payload = `>${textNodeStr}</w:p>`;
-      } else {
-         // Insert explicitly directly before paragraph closes
-         replaceStart = pMatch.index;
-         replaceEnd = pMatch.index;
-         payload = textNodeStr;
-      }
-      
-      // Combine multiple overlapping inserts directly onto the existing index
-      if (!groupedTasks[replaceStart]) {
-         groupedTasks[replaceStart] = { replaceStart, replaceEnd, payload: '' };
-      }
-      groupedTasks[replaceStart].payload += payload;
-  }
-  
-  // Enforce mathematically stable back-to-front array slicing
-  const finalSplices = Object.values(groupedTasks).sort((a, b) => b.replaceStart - a.replaceStart);
+    const pEnd = paragraphEnds[task.pIndex];
+    if (!pEnd) continue;
 
-  let pristineXmlString = xmlString;
-  for (const splice of finalSplices) {
-      pristineXmlString = pristineXmlString.substring(0, splice.replaceStart) + splice.payload + pristineXmlString.substring(splice.replaceEnd);
+    // Build the XML run to inject
+    const xmlRun = `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr><w:t xml:space="preserve"> ${escapeXml(task.textToInsert)}</w:t></w:r>`;
+
+    let splicePos, spliceEndPos, payload;
+
+    if (pEnd.isSelfClosing) {
+      // Convert self-closing <w:p .../> to <w:p ...>{run}</w:p>
+      splicePos = pEnd.index + pEnd.length - 2;
+      spliceEndPos = pEnd.index + pEnd.length;
+      payload = `>${xmlRun}</w:p>`;
+    } else {
+      // Insert run just before </w:p>
+      splicePos = pEnd.index;
+      spliceEndPos = pEnd.index;
+      payload = xmlRun;
+    }
+
+    if (!groupedTasks[splicePos]) {
+      groupedTasks[splicePos] = { splicePos, spliceEndPos, payload: '' };
+    }
+    groupedTasks[splicePos].payload += payload;
   }
 
-  // 4. Repackage the zip archive instantly completely bypassing all browser DOMSerializer algorithms!
-  zip.file('word/document.xml', pristineXmlString);
+  // Sort back-to-front so earlier splices don't shift later indices
+  const sortedSplices = Object.values(groupedTasks).sort((a, b) => b.splicePos - a.splicePos);
+
+  let outputXml = xmlString;
+  for (const splice of sortedSplices) {
+    outputXml = outputXml.substring(0, splice.splicePos) + splice.payload + outputXml.substring(splice.spliceEndPos);
+  }
+
+  // 4. Repackage into zip — no serialization, no namespace corruption
+  zip.file('word/document.xml', outputXml);
   const base64 = await zip.generateAsync({ type: 'base64' });
   return base64;
+}
+
+/**
+ * Escape special XML characters in user-entered text.
+ */
+function escapeXml(str) {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
 }

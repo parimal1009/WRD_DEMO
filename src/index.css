@@ -259,3 +259,71 @@ body {
   @apply focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/30;
   @apply transition-all duration-200;
 }
+
+/* ─── Drag & Drop Overlay ────────────────────────────────────────────────── */
+body.drag-active::after {
+  content: '📄 Drop .docx file here';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 27, 42, 0.92);
+  border: 3px dashed rgba(245, 166, 35, 0.6);
+  border-radius: 16px;
+  margin: 16px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #F5A623;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ─── Loading Spinner ────────────────────────────────────────────────────── */
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255, 255, 255, 0.2);
+  border-top-color: #F5A623;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* ─── Empty field pulse ──────────────────────────────────────────────────── */
+.doc-field:empty::after,
+.doc-field:has(> :only-child:empty)::after {
+  content: 'Click to fill';
+  color: rgba(245, 166, 35, 0.25);
+  font-style: italic;
+  font-size: 11px;
+}
+
+/* ─── Selection highlight ────────────────────────────────────────────────── */
+::selection {
+  background: rgba(245, 166, 35, 0.3);
+  color: #fff;
+}
+
+/* ─── Focus-visible for accessibility ────────────────────────────────────── */
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid #F5A623;
+  outline-offset: 2px;
+}
+
+/* ─── Smooth page transitions ────────────────────────────────────────────── */
+@keyframes fadeInUp {
+  0% { opacity: 0; transform: translateY(16px); }
+  100% { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out;
+}
+

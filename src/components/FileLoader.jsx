@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useDocumentState } from '../hooks/useDocumentState.js';
 
 /**
  * FileLoader — Home screen with file open, URL input, and template quick-open.
+ * Supports drag-and-drop .docx files on the web.
  */
 
 const TEMPLATES = [
@@ -45,10 +46,22 @@ const TEMPLATES = [
 ];
 
 export default function FileLoader() {
-  const { openFileDialog, loadFromUrl, loadTemplate } = useDocumentState();
+  const { openFileDialog, loadFromUrl, loadTemplate, loadFromPath } = useDocumentState();
   const [url, setUrl] = useState('');
   const [isLoadingUrl, setIsLoadingUrl] = useState(false);
   const [showUrlInput, setShowUrlInput] = useState(false);
+
+  // Listen for drag-and-drop file events from webPolyfill
+  useEffect(() => {
+    const handleDrop = async (e) => {
+      const fileName = e.detail?.fileName;
+      if (fileName) {
+        await loadFromPath(fileName);
+      }
+    };
+    window.addEventListener('voicedoc:file-drop', handleDrop);
+    return () => window.removeEventListener('voicedoc:file-drop', handleDrop);
+  }, [loadFromPath]);
 
   const handleOpenFile = async () => {
     await openFileDialog();
