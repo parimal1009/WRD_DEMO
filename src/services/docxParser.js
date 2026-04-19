@@ -1,43 +1,27 @@
 /**
- * DOCX Parser Service
- * Uses mammoth for HTML display AND JSZip to parse raw XML for accurate field mapping.
+ * DOCX Parser Service  
  * 
- * CORE ALGORITHM:
- * To perfectly map Mammoth's transformed HTML elements back to the raw XML coordinates,
- * we inject a unique, invisible tracking ID (V~D_{index}) into EVERY paragraph inside 
- * the XML string *before* handing it to Mammoth. After Mammoth renders the HTML, we extract 
- * the tracking IDs dynamically to link every clickable DIV directly to its exact raw XML paragraph.
+ * ARCHITECTURE: "Count-Both-Sides" approach
  * 
- * This completely eliminates fuzzy text-mapping collisions and empty cell bugs.
+ * We parse the raw document.xml with a simple regex to count every <w:p> paragraph
+ * in flat sequential order. We also let Mammoth render the HTML. Then we walk the
+ * Mammoth HTML DOM counting <td> cells sequentially and match them 1:1 to the
+ * raw XML cells (also counted sequentially via <w:tc>). For each cell, we record
+ * which raw paragraph indices it contains. 
+ * 
+ * This avoids any XML modification, any text fuzzy-matching, and any DOM serialization.
+ * The mapping is purely structural: cell N in Mammoth's HTML = cell N in raw XML.
  */
 import mammoth from 'mammoth';
 import JSZip from 'jszip';
 
 export async function parseDocx(arrayBuffer) {
-  // 1. Unzip the docx to inject tracking IDs into the raw XML
-  const jszip = new JSZip();
-  const zip = await jszip.loadAsync(arrayBuffer);
-  let xmlString = await zip.file('word/document.xml').async('text');
+  // 1. Parse raw XML to build structural map (cell -> paragraph indices)
+  const structuralMap = await buildStructuralMap(arrayBuffer);
 
-  // Inject V~D_{index} precisely before every paragraph closes.
-  let pCounter = 0;
-  let injectedXml = xmlString.replace(/(<\/w:p>|<w:p(?: [^>]*)?\/>)/g, (match) => {
-    const signature = `<w:r><w:t>V~D_${pCounter++}</w:t></w:r>`;
-    if (match.startsWith('</')) {
-      return `${signature}</w:p>`;
-    } else {
-      // Handle empty self-closing paragraphs by expanding them
-      return match.replace(/\/>$/, `>${signature}</w:p>`);
-    }
-  });
-
-  // Package the injected XML for Mammoth only
-  zip.file('word/document.xml', injectedXml);
-  const injectedBuffer = await zip.generateAsync({ type: 'arraybuffer' });
-
-  // 2. Convert to HTML for display using Mammoth
+  // 2. Convert to HTML for display using Mammoth (on ORIGINAL unmodified buffer)
   const result = await mammoth.convertToHtml(
-    { arrayBuffer: injectedBuffer },
+    { arrayBuffer },
     {
       styleMap: [
         "p[style-name='Heading 1'] => h1:fresh",
@@ -48,23 +32,156 @@ export async function parseDocx(arrayBuffer) {
   );
 
   let html = result.value;
+  if (result.messages.length > 0) {
+    console.warn('Mammoth warnings:', result.messages);
+  }
 
-  // 3. Extract the injected coordinates back out to build a flawless field map
-  const { annotatedHtml, fieldMap } = extractCoordinatesAndAnnotate(html);
+  // 3. Annotate HTML by matching sequential structure  
+  const { annotatedHtml, fieldMap } = annotateHtml(html, structuralMap);
 
-  return {
-    html: annotatedHtml,
-    fieldMap,
-    // Note: The original buffer in state remains untampered for the Writer!
-    rawHtml: html,
-  };
+  return { html: annotatedHtml, fieldMap, rawHtml: html };
 }
 
 /**
- * Sweeps the Mammoth HTML to find tracking IDs, annotates the elements,
- * and strips the IDs from the visual layer.
+ * Build a structural map from raw document.xml.
+ * Returns arrays of cell info and standalone paragraph info with their
+ * global paragraph indices.
  */
-function extractCoordinatesAndAnnotate(html) {
+async function buildStructuralMap(arrayBuffer) {
+  const zip = await new JSZip().loadAsync(arrayBuffer);
+  const xmlString = await zip.file('word/document.xml').async('text');
+
+  // We need to walk the XML structure to count:
+  // - Global paragraph index (every <w:p> in document order)
+  // - Which paragraphs belong to which table cells
+  // - Which paragraphs are standalone (outside tables)
+  
+  const cells = [];        // { cellIndex, firstParagraph, lastParagraph, text }
+  const standaloneParagraphs = []; // { paragraphIndex, text }
+  
+  // Simple state-machine XML walker using regex
+  // This avoids DOMParser which can corrupt namespaces
+  let globalParagraphIndex = 0;
+  let inTable = false;
+  let inCell = false;
+  let cellParagraphStart = -1;
+  let cellIndex = 0;
+  let cellTextParts = [];
+  
+  // Tokenize the XML into structural events
+  const tagRegex = /<(\/?)w:(tbl|tr|tc|p|t)([ >\/])/g;
+  let match;
+  let lastTextEnd = 0;
+  
+  // More precise approach: use a proper tag-by-tag scanner
+  const openClose = /<(\/?)w:(tbl|tr|tc|p)([ \/>][^>]*>|>)/g;
+  let tableDepth = 0;
+  let cellDepth = 0;
+  let paraDepth = 0;
+  let currentParaText = '';
+  
+  // Extract text content between tags
+  const getText = (xml, start, end) => {
+    const segment = xml.substring(start, end);
+    const texts = [];
+    const tRegex = /<w:t[^>]*>([^<]*)<\/w:t>/g;
+    let tMatch;
+    while ((tMatch = tRegex.exec(segment)) !== null) {
+      texts.push(tMatch[1]);
+    }
+    return texts.join('');
+  };
+  
+  // Find all structural tags and their positions
+  const allTags = [];
+  const structRegex = /<(\/?)(w:tbl|w:tr|w:tc|w:p)([ \/>][^>]*>|>)/g;
+  let sMatch;
+  while ((sMatch = structRegex.exec(xmlString)) !== null) {
+    const isClosing = sMatch[1] === '/';
+    const tagName = sMatch[2];
+    const isSelfClosing = sMatch[0].endsWith('/>');
+    allTags.push({
+      isClosing,
+      tagName,
+      isSelfClosing,
+      position: sMatch.index,
+      endPosition: sMatch.index + sMatch[0].length,
+      fullMatch: sMatch[0],
+    });
+  }
+  
+  let currentCellStart = -1;
+  let paragraphsInCurrentCell = [];
+  
+  for (let i = 0; i < allTags.length; i++) {
+    const tag = allTags[i];
+    
+    if (tag.tagName === 'w:tbl' && !tag.isClosing && !tag.isSelfClosing) {
+      tableDepth++;
+    } else if (tag.tagName === 'w:tbl' && tag.isClosing) {
+      tableDepth--;
+    } else if (tag.tagName === 'w:tc' && !tag.isClosing && !tag.isSelfClosing) {
+      cellDepth++;
+      if (cellDepth === 1) {
+        currentCellStart = tag.endPosition;
+        paragraphsInCurrentCell = [];
+      }
+    } else if (tag.tagName === 'w:tc' && tag.isClosing) {
+      if (cellDepth === 1) {
+        // Cell is closing — record it
+        const cellText = getText(xmlString, currentCellStart, tag.position);
+        cells.push({
+          cellIndex: cellIndex++,
+          paragraphs: [...paragraphsInCurrentCell],
+          firstParagraph: paragraphsInCurrentCell.length > 0 ? paragraphsInCurrentCell[0] : -1,
+          lastParagraph: paragraphsInCurrentCell.length > 0 ? paragraphsInCurrentCell[paragraphsInCurrentCell.length - 1] : -1,
+          text: cellText.trim(),
+        });
+      }
+      cellDepth--;
+    } else if (tag.tagName === 'w:p') {
+      if (tag.isSelfClosing) {
+        // Self-closing paragraph
+        if (cellDepth > 0) {
+          paragraphsInCurrentCell.push(globalParagraphIndex);
+        } else if (tableDepth === 0) {
+          standaloneParagraphs.push({
+            paragraphIndex: globalParagraphIndex,
+            text: '',
+          });
+        }
+        globalParagraphIndex++;
+      } else if (!tag.isClosing) {
+        // Opening <w:p>
+        paraDepth++;
+      } else if (tag.isClosing) {
+        // Closing </w:p>
+        if (paraDepth > 0) {
+          // Find the text content of this paragraph by looking back to the opening tag
+          // For simplicity, just grab text near this position
+          if (cellDepth > 0) {
+            paragraphsInCurrentCell.push(globalParagraphIndex);
+          } else if (tableDepth === 0) {
+            standaloneParagraphs.push({
+              paragraphIndex: globalParagraphIndex,
+              text: '', // We don't need text for standalone paras
+            });
+          }
+          globalParagraphIndex++;
+          paraDepth--;
+        }
+      }
+    }
+  }
+  
+  return { cells, standaloneParagraphs, totalParagraphs: globalParagraphIndex };
+}
+
+/**
+ * Annotate Mammoth HTML by sequentially matching HTML cells to XML cells.
+ * Mammoth preserves table cell order, so cell[0] in HTML = cell[0] in XML.
+ */
+function annotateHtml(html, structuralMap) {
   const fieldMap = {};
   
   if (typeof document === 'undefined') return { annotatedHtml: html, fieldMap };
@@ -72,68 +189,53 @@ function extractCoordinatesAndAnnotate(html) {
   const tempDiv = document.createElement('div');
   tempDiv.innerHTML = html;
 
-  const normalizeLabel = (str) => str.replace(/V~D_\d+/g, '').replace(/\s+/g, ' ').trim().slice(0, 50);
-
-  // Strip text nodes of tracking IDs helper
-  const eraseTrackingIds = (element) => {
-      const walk = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, null, false);
-      let textNode;
-      while ((textNode = walk.nextNode())) {
-          if (textNode.nodeValue.includes('V~D_')) {
-              textNode.nodeValue = textNode.nodeValue.replace(/V~D_\d+/g, '');
-          }
-      }
-  };
-
-  // Process all Table Cells first to ensure they become large click targets
+  // Match HTML cells to XML cells sequentially (1:1 order preserved by Mammoth)
   const htmlCells = tempDiv.querySelectorAll('td');
-  htmlCells.forEach(td => {
-      const rawText = td.textContent;
-      const matches = rawText.match(/V~D_(\d+)/g);
-      if (matches) {
-          // Always target the LAST paragraph in the cell for injection
-          const lastIdStr = matches[matches.length - 1];
-          const pIndex = parseInt(lastIdStr.split('_')[1], 10);
-          
-          const fieldId = `field-tc-${pIndex}`;
-          fieldMap[fieldId] = {
-              type: 'table-cell',
-              index: pIndex, // This is the EXACT flat paragraph index in raw XML!
-              label: normalizeLabel(rawText) || 'Table Cell',
-          };
-          
-          td.setAttribute('data-field-id', fieldId);
-          td.classList.add('doc-field');
-      }
-      eraseTrackingIds(td); // Clean cell
+  
+  htmlCells.forEach((td, htmlIndex) => {
+    const xmlCell = structuralMap.cells[htmlIndex];
+    if (!xmlCell) return;
+    
+    // Use the LAST paragraph in the cell as the injection target
+    const targetParagraph = xmlCell.lastParagraph;
+    if (targetParagraph < 0) return;
+    
+    const fieldId = `field-tc-${htmlIndex}`;
+    const label = td.textContent.trim().slice(0, 50) || `Cell ${htmlIndex + 1}`;
+    
+    fieldMap[fieldId] = {
+      type: 'table-cell',
+      index: targetParagraph,  // Global paragraph index in raw XML
+      label,
+    };
+    
+    td.setAttribute('data-field-id', fieldId);
+    td.classList.add('doc-field');
   });
 
-  // Process all standalone paragraphs outside of tables
+  // Match standalone paragraphs
   const htmlParas = tempDiv.querySelectorAll('p, h1, h2, h3, h4, h5, h6, li');
-  htmlParas.forEach(p => {
-      if (p.closest('td')) return; // Already processed as part of a cell block
-      
-      const rawText = p.textContent;
-      const matches = rawText.match(/V~D_(\d+)/g);
-      if (matches) {
-          const lastIdStr = matches[matches.length - 1];
-          const pIndex = parseInt(lastIdStr.split('_')[1], 10);
-          
-          const fieldId = `field-p-${pIndex}`;
-          fieldMap[fieldId] = {
-              type: 'paragraph',
-              index: pIndex, // EXACT flat paragraph index
-              label: normalizeLabel(rawText) || 'Paragraph',
-          };
-          
-          p.setAttribute('data-field-id', fieldId);
-          p.classList.add('doc-field');
-      }
-      eraseTrackingIds(p); // Clean paragraph
+  let standaloneIndex = 0;
+  
+  htmlParas.forEach((p) => {
+    if (p.closest('td')) return; // Skip table paragraphs
+    
+    const xmlPara = structuralMap.standaloneParagraphs[standaloneIndex];
+    if (!xmlPara) return;
+    
+    const fieldId = `field-p-${standaloneIndex}`;
+    const label = p.textContent.trim().slice(0, 50) || `Paragraph ${standaloneIndex + 1}`;
+    
+    fieldMap[fieldId] = {
+      type: 'paragraph',
+      index: xmlPara.paragraphIndex,
+      label,
+    };
+    
+    p.setAttribute('data-field-id', fieldId);
+    p.classList.add('doc-field');
+    standaloneIndex++;
   });
-
-  // Final redundant cleanup sweep just in case
-  eraseTrackingIds(tempDiv);
 
   return { annotatedHtml: tempDiv.innerHTML, fieldMap };
 }
