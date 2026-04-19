@@ -44,11 +44,11 @@ body {
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════
-   DOCUMENT FIELD STYLES — Core click-to-fill system
+   DOCUMENT FIELD STYLES — Core field system
    
    ARCHITECTURE:
    - Fields are marked with [data-field-id] by the docxParser
-   - Visual states are controlled via CSS classes: .active, .has-content, .field-empty
+   - Visual states are controlled via CSS classes: .active, .has-content
    - Insertion text is displayed via data-insertion attribute + ::after pseudo-element
    - This approach avoids DOM manipulation = no layout shifts, no alignment issues
    ═══════════════════════════════════════════════════════════════════════════ */
@@ -133,19 +133,62 @@ td.doc-field[data-insertion]::after {
   word-break: break-word;
 }
 
-/* ── "Click to fill" placeholder for empty fields ────────────────────────── 
-   CRITICAL FIX: Only shows on .field-empty class (set by React),
-   NOT on :empty pseudo-class which caused the repetition bug.
-   Also hidden on .active and .has-content fields. */
-.doc-field.field-empty:not(.active):not(.has-content)::after {
-  content: 'Click to fill';
-  color: rgba(245, 166, 35, 0.20);
-  font-style: italic;
-  font-size: 11px;
-  font-weight: 400;
+/* ── Field Action Buttons (Edit / Remove) ────────────────────────────────── 
+   Overlay buttons shown on filled fields for editing or removing content.
+   Positioned at top-right, matching the checkmark badge placement. */
+.field-actions {
+  position: absolute;
+  top: -8px;
+  right: 14px;
+  display: flex;
+  gap: 3px;
+  opacity: 0;
   pointer-events: none;
-  display: inline;
-  margin-left: 4px;
+  transition: opacity 0.2s ease;
+  z-index: 3;
+}
+
+.doc-field.has-content:hover .field-actions,
+.doc-field.has-content:focus-within .field-actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.field-action-btn {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  font-size: 10px;
+  line-height: 1;
+  transition: transform 0.15s ease, background 0.15s ease;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+}
+
+.field-action-btn:hover {
+  transform: scale(1.15);
+}
+
+.field-action-btn.edit-btn {
+  background: #3B82F6;
+  color: white;
+}
+
+.field-action-btn.edit-btn:hover {
+  background: #60A5FA;
+}
+
+.field-action-btn.remove-btn {
+  background: #EF4444;
+  color: white;
+}
+
+.field-action-btn.remove-btn:hover {
+  background: #F87171;
 }
 
 /* ─── Document Rendered Content ──────────────────────────────────────────── */

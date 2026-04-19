@@ -7,11 +7,11 @@ import { useAppState } from '../store/AppContext.jsx';
  * KEY DESIGN DECISIONS:
  * 1. Insertions are displayed via CSS ::after pseudo-elements using data-attributes,
  *    NOT via DOM manipulation. This prevents alignment disturbance.
- * 2. "Click to fill" placeholders only appear on truly empty, unfilled fields.
+ * 2. Filled fields show edit/remove action buttons on hover.
  * 3. Full keyboard navigation: Enter (confirm/next), Space (skip), Tab, Arrow keys, Escape.
  */
 export default function DocumentViewer() {
-  const { state, dispatch, ActionTypes, sortedFieldIds, navigateToNextField, navigateToPrevField } = useAppState();
+  const { state, dispatch, ActionTypes, sortedFieldIds, navigateToNextField, navigateToPrevField, notify } = useAppState();
   const containerRef = useRef(null);
   const { document: doc, activeFieldId, insertions } = state;
 
@@ -21,9 +21,27 @@ export default function DocumentViewer() {
   const fieldIds = sortedFieldIds;
 
   /**
-   * Handle click on a document field.
+   * Handle removing an insertion from a field.
    */
+  const handleRemoveInsertion = useCallback((fieldId) => {
+    dispatch({ type: ActionTypes.REMOVE_INSERTION, payload: fieldId });
+    notify('Field cleared', 'info');
+  }, [dispatch, ActionTypes, notify]);
+
+  /**
+   * Handle editing a field (re-select it for new input).
+   */
+  const handleEditField = useCallback((fieldId) => {
+    // Remove the existing insertion so the user starts fresh
+    dispatch({ type: ActionTypes.REMOVE_INSERTION, payload: fieldId });
+    // Set as active field to open recorder panel
+    dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: fieldId });
+  }, [dispatch, ActionTypes]);
+
   const handleFieldClick = useCallback((e) => {
+    // Don't trigger field selection if clicking on action buttons
+    if (e.target.closest('.field-actions')) return;
+
     const fieldEl = e.target.closest('[data-field-id]');
     if (!fieldEl) return;
 
@@ -131,9 +149,13 @@ export default function DocumentViewer() {
       const id = field.getAttribute('data-field-id');
       
       // Clear all state classes
-      field.classList.remove('active', 'has-content', 'field-empty');
+      field.classList.remove('active', 'has-content');
       field.removeAttribute('data-insertion');
       field.removeAttribute('data-field-status');
+
+      // Remove any previously injected action buttons
+      const existingActions = field.querySelector('.field-actions');
+      if (existingActions) existingActions.remove();
 
       // Set active highlight
       if (id === activeFieldId) {
@@ -147,12 +169,21 @@ export default function DocumentViewer() {
         field.classList.add('has-content');
         field.setAttribute('data-insertion', insertions[id]);
         field.setAttribute('data-field-status', 'filled');
+
+        // Inject edit/remove action buttons
+        const actionsDiv = document.createElement('span');
+        actionsDiv.className = 'field-actions';
+        actionsDiv.innerHTML = `
+          <button class="field-action-btn edit-btn" data-action="edit" data-target-field="${id}" title="Edit this field">
+            ✎
+          </button>
+          <button class="field-action-btn remove-btn" data-action="remove" data-target-field="${id}" title="Remove content">
+            ✕
+          </button>
+        `;
+        field.appendChild(actionsDiv);
       } else {
-        // Mark as empty only if not active (prevent "Click to fill" showing while recording)
-        if (id !== activeFieldId) {
-          field.classList.add('field-empty');
-          field.setAttribute('data-field-status', 'empty');
-        }
+        field.setAttribute('data-field-status', 'empty');
       }
     });
   }, [activeFieldId, insertions]);
@@ -220,7 +251,19 @@ export default function DocumentViewer() {
         <div
           ref={containerRef}
           className="document-content"
-          onClick={handleFieldClick}
+          onClick={(e) => {
+            // Handle action button clicks
+            const actionBtn = e.target.closest('.field-action-btn');
+            if (actionBtn) {
+              e.stopPropagation();
+              const action = actionBtn.getAttribute('data-action');
+              const targetField = actionBtn.getAttribute('data-target-field');
+              if (action === 'edit') handleEditField(targetField);
+              if (action === 'remove') handleRemoveInsertion(targetField);
+              return;
+            }
+            handleFieldClick(e);
+          }}
           dangerouslySetInnerHTML={{ __html: doc.html }}
         />
       </div>
