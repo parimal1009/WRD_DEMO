@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useReducer, useCallback, useEffect, useState } from 'react';
+import React, { createContext, useContext, useReducer, useCallback, useEffect, useState, useMemo } from 'react';
 
 // ─── Initial State ──────────────────────────────────────────────────────────
 
@@ -78,6 +78,7 @@ const ActionTypes = {
   // Field selection
   SET_ACTIVE_FIELD: 'SET_ACTIVE_FIELD',
   CLEAR_ACTIVE_FIELD: 'CLEAR_ACTIVE_FIELD',
+  SKIP_FIELD: 'SKIP_FIELD',
   
   // Insertions
   INSERT_TEXT: 'INSERT_TEXT',
@@ -111,6 +112,43 @@ const ActionTypes = {
   CLEAR_NOTIFICATION: 'CLEAR_NOTIFICATION',
 };
 
+// ─── Helpers ────────────────────────────────────────────────────────────────
+
+/**
+ * Returns a sorted array of [fieldId, fieldMeta] entries
+ * for deterministic field ordering throughout the app.
+ */
+function getSortedFieldEntries(fieldMap) {
+  if (!fieldMap) return [];
+  return Object.entries(fieldMap).sort((a, b) => a[1].index - b[1].index);
+}
+
+/**
+ * Given a fieldMap and current active field, return the next field ID or null.
+ */
+function getNextFieldId(fieldMap, currentFieldId) {
+  const entries = getSortedFieldEntries(fieldMap);
+  const keys = entries.map(([id]) => id);
+  const currentIndex = keys.indexOf(currentFieldId);
+  if (currentIndex >= 0 && currentIndex < keys.length - 1) {
+    return keys[currentIndex + 1];
+  }
+  return null;
+}
+
+/**
+ * Given a fieldMap and current active field, return the previous field ID or null.
+ */
+function getPrevFieldId(fieldMap, currentFieldId) {
+  const entries = getSortedFieldEntries(fieldMap);
+  const keys = entries.map(([id]) => id);
+  const currentIndex = keys.indexOf(currentFieldId);
+  if (currentIndex > 0) {
+    return keys[currentIndex - 1];
+  }
+  return null;
+}
+
 // ─── Reducer ────────────────────────────────────────────────────────────────
 
 function appReducer(state, action) {
@@ -122,6 +160,7 @@ function appReducer(state, action) {
         ui: { ...state.ui, view: 'document' },
         insertions: {},
         auditTrail: [],
+        activeFieldId: null,
       };
       
     case ActionTypes.CLEAR_DOCUMENT:
@@ -141,6 +180,7 @@ function appReducer(state, action) {
         ...state,
         activeFieldId: action.payload,
         ui: { ...state.ui, showRecorder: true },
+        // Reset recording and transcription state when switching fields
         recording: initialState.recording,
         transcription: initialState.transcription,
       };
@@ -151,6 +191,26 @@ function appReducer(state, action) {
         activeFieldId: null,
         ui: { ...state.ui, showRecorder: false },
       };
+
+    case ActionTypes.SKIP_FIELD: {
+      // Skip current field and advance to next
+      const nextId = getNextFieldId(state.document.fieldMap, state.activeFieldId);
+      if (nextId) {
+        return {
+          ...state,
+          activeFieldId: nextId,
+          ui: { ...state.ui, showRecorder: true },
+          recording: initialState.recording,
+          transcription: initialState.transcription,
+        };
+      }
+      // No more fields — deselect
+      return {
+        ...state,
+        activeFieldId: null,
+        ui: { ...state.ui, showRecorder: false },
+      };
+    }
       
     case ActionTypes.INSERT_TEXT:
       return {
@@ -158,9 +218,10 @@ function appReducer(state, action) {
         insertions: { ...state.insertions, [action.payload.fieldId]: action.payload.text },
       };
       
-    case ActionTypes.REMOVE_INSERTION:
+    case ActionTypes.REMOVE_INSERTION: {
       const { [action.payload]: _, ...remaining } = state.insertions;
       return { ...state, insertions: remaining };
+    }
       
     case ActionTypes.CLEAR_INSERTIONS:
       return { ...state, insertions: {} };
@@ -226,6 +287,11 @@ export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [settingsLoaded, setSettingsLoaded] = useState(false);
 
+  // Precompute sorted field list once whenever fieldMap changes
+  const sortedFieldIds = useMemo(() => {
+    return getSortedFieldEntries(state.document.fieldMap).map(([id]) => id);
+  }, [state.document.fieldMap]);
+
   // Load settings on mount
   useEffect(() => {
     async function loadSettings() {
@@ -267,8 +333,37 @@ export function AppProvider({ children }) {
     dispatch({ type: ActionTypes.SHOW_NOTIFICATION, payload: { message, type } });
   }, []);
 
+  // Navigation helpers exposed via context
+  const navigateToNextField = useCallback(() => {
+    const nextId = getNextFieldId(state.document.fieldMap, state.activeFieldId);
+    if (nextId) {
+      dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: nextId });
+      return nextId;
+    }
+    dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
+    return null;
+  }, [state.document.fieldMap, state.activeFieldId]);
+
+  const navigateToPrevField = useCallback(() => {
+    const prevId = getPrevFieldId(state.document.fieldMap, state.activeFieldId);
+    if (prevId) {
+      dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: prevId });
+      return prevId;
+    }
+    return null;
+  }, [state.document.fieldMap, state.activeFieldId]);
+
   return (
-    <AppContext.Provider value={{ state, dispatch, ActionTypes, notify, settingsLoaded }}>
+    <AppContext.Provider value={{
+      state,
+      dispatch,
+      ActionTypes,
+      notify,
+      settingsLoaded,
+      sortedFieldIds,
+      navigateToNextField,
+      navigateToPrevField,
+    }}>
       {children}
     </AppContext.Provider>
   );

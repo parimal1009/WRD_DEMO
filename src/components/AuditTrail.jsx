@@ -43,6 +43,7 @@ export default function AuditTrail() {
         rawText: entry.rawText,
         polishedText: entry.polishedText,
         timestamp: entry.timestamp,
+        inputMode: entry.inputMode || 'voice',
       }));
 
       const jsonStr = JSON.stringify(auditData, null, 2);
@@ -50,7 +51,6 @@ export default function AuditTrail() {
       
       const savePath = await window.electronAPI.saveFile('audit_trail.json');
       if (savePath) {
-        // Ensure .json extension
         const finalPath = savePath.endsWith('.json') ? savePath : savePath.replace(/\.\w+$/, '.json');
         await window.electronAPI.writeFile(finalPath, base64);
         notify('Audit trail exported', 'success');
@@ -62,8 +62,12 @@ export default function AuditTrail() {
   };
 
   const formatTime = (isoString) => {
-    const date = new Date(isoString);
-    return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    try {
+      const date = new Date(isoString);
+      return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    } catch {
+      return '--:--:--';
+    }
   };
 
   return (
@@ -106,12 +110,12 @@ export default function AuditTrail() {
           <div className="space-y-1">
             {auditTrail.map((entry, index) => (
               <div
-                key={index}
+                key={`${entry.fieldId}-${entry.timestamp}-${index}`}
                 className="glass-card p-3 text-xs animate-fade-in"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2 mb-1">
+                    <div className="flex items-center gap-2 mb-1 flex-wrap">
                       <span className="text-amber-400 font-mono text-[11px] bg-amber-400/10 px-1.5 py-0.5 rounded">
                         {entry.fieldLabel?.slice(0, 30) || entry.fieldId}
                       </span>
@@ -120,8 +124,12 @@ export default function AuditTrail() {
                         {formatTime(entry.timestamp)}
                       </span>
                       <span className="text-white/20">•</span>
-                      <span className="text-white/30 uppercase text-[10px]">
-                        {entry.language || 'en'}
+                      <span className={`text-[10px] px-1 py-0.5 rounded ${
+                        entry.inputMode === 'type' 
+                          ? 'text-blue-400 bg-blue-400/10' 
+                          : 'text-amber-400 bg-amber-400/10'
+                      }`}>
+                        {entry.inputMode === 'type' ? '⌨ typed' : '🎙 voice'}
                       </span>
                     </div>
                     <p className="text-white/50 truncate font-mono leading-relaxed">

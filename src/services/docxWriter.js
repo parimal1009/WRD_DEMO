@@ -10,10 +10,27 @@
  */
 import JSZip from 'jszip';
 
+/**
+ * Insert text into an existing .docx file.
+ * @param {ArrayBuffer} originalBuffer - The original .docx file as ArrayBuffer
+ * @param {Object} insertions - Map of fieldId -> text to insert
+ * @param {Object} fieldMap - Map of fieldId -> { type, index, label }
+ * @returns {Promise<string>} Base64-encoded modified .docx file
+ */
 export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
+  if (!originalBuffer) {
+    throw new Error('No document buffer provided');
+  }
+  
   const jszip = new JSZip();
   const zip = await jszip.loadAsync(originalBuffer);
-  const xmlString = await zip.file('word/document.xml').async('text');
+  const docXmlFile = zip.file('word/document.xml');
+  
+  if (!docXmlFile) {
+    throw new Error('Invalid .docx: missing word/document.xml');
+  }
+  
+  const xmlString = await docXmlFile.async('text');
 
   // Build injection tasks
   const injectionTasks = [];
@@ -27,6 +44,12 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
 
     // Both table cells and regular paragraphs now store the exact P index in fieldMeta.index
     injectionTasks.push({ pIndex: fieldMeta.index, textToInsert });
+  }
+
+  if (injectionTasks.length === 0) {
+    // No insertions to make, return original
+    const base64 = await zip.generateAsync({ type: 'base64' });
+    return base64;
   }
 
   // Find all </w:p> and self-closing <w:p.../> positions in the raw XML string
@@ -45,7 +68,10 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
   const groupedTasks = {};
   for (const task of injectionTasks) {
     const pEnd = paragraphEnds[task.pIndex];
-    if (!pEnd) continue;
+    if (!pEnd) {
+      console.warn(`Writer: paragraph index ${task.pIndex} not found in XML (total: ${paragraphEnds.length})`);
+      continue;
+    }
 
     // Build the XML run to inject
     const xmlRun = `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr><w:t xml:space="preserve"> ${escapeXml(task.textToInsert)}</w:t></w:r>`;
@@ -84,6 +110,9 @@ export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
   return base64;
 }
 
+/**
+ * Escape XML special characters to prevent document corruption.
+ */
 function escapeXml(str) {
   return str
     .replace(/&/g, '&amp;')

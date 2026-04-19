@@ -43,47 +43,109 @@ body {
   background: #4A6078;
 }
 
-/* ─── Document Viewer Field Styles ───────────────────────────────────────── */
+/* ═══════════════════════════════════════════════════════════════════════════
+   DOCUMENT FIELD STYLES — Core click-to-fill system
+   
+   ARCHITECTURE:
+   - Fields are marked with [data-field-id] by the docxParser
+   - Visual states are controlled via CSS classes: .active, .has-content, .field-empty
+   - Insertion text is displayed via data-insertion attribute + ::after pseudo-element
+   - This approach avoids DOM manipulation = no layout shifts, no alignment issues
+   ═══════════════════════════════════════════════════════════════════════════ */
+
 .doc-field {
-  cursor: text;
-  transition: all 0.2s ease;
+  cursor: pointer;
+  transition: background 0.2s ease, outline 0.2s ease, box-shadow 0.2s ease;
   border-radius: 4px;
   padding: 2px 4px;
   position: relative;
-  min-height: 1.5em;
+  min-height: 1.4em;
 }
 
+/* Hover state — subtle amber highlight */
 .doc-field:hover {
-  background: rgba(245, 166, 35, 0.08);
-  outline: 1px dashed rgba(245, 166, 35, 0.3);
+  background: rgba(245, 166, 35, 0.06);
+  outline: 1px dashed rgba(245, 166, 35, 0.25);
 }
 
+/* Active field — currently selected for recording/typing */
 .doc-field.active {
-  background: rgba(245, 166, 35, 0.12);
+  background: rgba(245, 166, 35, 0.10);
   outline: 2px solid #F5A623;
-  animation: glow 2s ease-in-out infinite alternate;
+  box-shadow: 0 0 12px rgba(245, 166, 35, 0.15);
+  animation: fieldGlow 2s ease-in-out infinite alternate;
 }
 
+/* Filled field — has content inserted */
 .doc-field.has-content {
-  background: rgba(34, 197, 94, 0.08);
-  outline: 1px solid rgba(34, 197, 94, 0.3);
+  background: rgba(34, 197, 94, 0.06);
+  outline: 1px solid rgba(34, 197, 94, 0.25);
 }
 
-.doc-field.has-content::after {
+/* ── Filled field checkmark badge ────────────────────────────────────────── */
+.doc-field.has-content::before {
   content: '✓';
   position: absolute;
   top: -6px;
   right: -6px;
   background: #22C55E;
   color: white;
-  font-size: 10px;
-  width: 16px;
-  height: 16px;
+  font-size: 9px;
+  width: 15px;
+  height: 15px;
   border-radius: 50%;
   display: flex;
   align-items: center;
   justify-content: center;
   line-height: 1;
+  z-index: 2;
+  pointer-events: none;
+  box-shadow: 0 1px 4px rgba(34, 197, 94, 0.3);
+}
+
+/* ── Insertion text display ──────────────────────────────────────────────── 
+   Shows the inserted text inline after the field content.
+   Uses ::after pseudo-element reading from data-insertion attribute.
+   This is THE fix for alignment disturbance — no DOM children are created. */
+.doc-field[data-insertion]::after {
+  content: ' ' attr(data-insertion);
+  color: #60A5FA;
+  font-weight: 600;
+  font-size: inherit;
+  font-family: inherit;
+  line-height: inherit;
+  /* Keep it inline so tables don't break */
+  display: inline;
+  pointer-events: none;
+}
+
+/* For table cells specifically, ensure the insertion appears cleanly */
+td.doc-field[data-insertion]::after {
+  display: block;
+  margin-top: 3px;
+  padding: 2px 6px;
+  background: rgba(96, 165, 250, 0.06);
+  border-left: 2px solid #60A5FA;
+  border-radius: 0 4px 4px 0;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* ── "Click to fill" placeholder for empty fields ────────────────────────── 
+   CRITICAL FIX: Only shows on .field-empty class (set by React),
+   NOT on :empty pseudo-class which caused the repetition bug.
+   Also hidden on .active and .has-content fields. */
+.doc-field.field-empty:not(.active):not(.has-content)::after {
+  content: 'Click to fill';
+  color: rgba(245, 166, 35, 0.20);
+  font-style: italic;
+  font-size: 11px;
+  font-weight: 400;
+  pointer-events: none;
+  display: inline;
+  margin-left: 4px;
 }
 
 /* ─── Document Rendered Content ──────────────────────────────────────────── */
@@ -98,6 +160,7 @@ body {
   border-collapse: collapse;
   width: 100%;
   margin: 12px 0;
+  table-layout: fixed;
 }
 
 .document-content td,
@@ -106,6 +169,8 @@ body {
   padding: 8px 12px;
   text-align: left;
   vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .document-content th {
@@ -172,6 +237,12 @@ body {
   100% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
   }
+}
+
+/* ─── Field Glow Animation ───────────────────────────────────────────────── */
+@keyframes fieldGlow {
+  0% { box-shadow: 0 0 5px rgba(245, 166, 35, 0.2); }
+  100% { box-shadow: 0 0 16px rgba(245, 166, 35, 0.4); }
 }
 
 /* ─── Glass Card ─────────────────────────────────────────────────────────── */
@@ -296,15 +367,6 @@ body.drag-active::after {
   to { transform: rotate(360deg); }
 }
 
-/* ─── Empty field pulse ──────────────────────────────────────────────────── */
-.doc-field:empty::after,
-.doc-field:has(> :only-child:empty)::after {
-  content: 'Click to fill';
-  color: rgba(245, 166, 35, 0.25);
-  font-style: italic;
-  font-size: 11px;
-}
-
 /* ─── Selection highlight ────────────────────────────────────────────────── */
 ::selection {
   background: rgba(245, 166, 35, 0.3);
@@ -318,6 +380,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
 }
 
 /* ─── Smooth page transitions ────────────────────────────────────────────── */
+@keyframes fadeIn {
+  0% { opacity: 0; }
+  100% { opacity: 1; }
+}
+
 @keyframes fadeInUp {
   0% { opacity: 0; transform: translateY(16px); }
   100% { opacity: 1; transform: translateY(0); }
@@ -327,3 +394,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visib
   animation: fadeInUp 0.4s ease-out;
 }
 
+/* ─── Keyboard shortcut kbd styling ──────────────────────────────────────── */
+kbd {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  line-height: 1;
+}

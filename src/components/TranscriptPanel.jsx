@@ -1,9 +1,11 @@
-import React from 'react';
+import React, { useRef, useEffect } from 'react';
 import { isRTL } from '../utils/languageMap.js';
 import { useAppState } from '../store/AppContext.jsx';
 
 /**
  * TranscriptPanel — Shows raw and polished transcripts with edit, insert, re-record, and discard actions.
+ * 
+ * KEY FIX: stopPropagation on key events to prevent document-level keyboard handler interference.
  */
 export default function TranscriptPanel({
   rawText,
@@ -16,6 +18,34 @@ export default function TranscriptPanel({
 }) {
   const { state } = useAppState();
   const rtl = isRTL(state.settings.language);
+  const textareaRef = useRef(null);
+
+  // Auto-focus the polished text editor when it gets content
+  useEffect(() => {
+    if (polishedText && textareaRef.current) {
+      textareaRef.current.focus();
+    }
+  }, [polishedText]);
+
+  /**
+   * Handle keyboard events in the polished text editor.
+   * Enter (no shift) inserts the text and advances.
+   */
+  const handleKeyDown = (e) => {
+    // Stop propagation to prevent document-level handlers from interfering
+    e.stopPropagation();
+    
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (polishedText && !isPolishing) {
+        onInsert(polishedText);
+      }
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      onDiscard();
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col border-t border-white/5 overflow-y-auto">
@@ -44,8 +74,10 @@ export default function TranscriptPanel({
           )}
         </div>
         <textarea
+          ref={textareaRef}
           value={polishedText}
           onChange={(e) => onPolishedTextChange(e.target.value)}
+          onKeyDown={handleKeyDown}
           dir={rtl ? 'rtl' : 'ltr'}
           className="w-full bg-navy-800/50 border border-white/5 rounded-lg p-3 text-sm text-white leading-relaxed
                      font-mono resize-none focus:outline-none focus:border-amber-400/30 transition-colors
@@ -53,6 +85,10 @@ export default function TranscriptPanel({
           placeholder="Polished text will appear here..."
           id="polished-text-editor"
         />
+        {/* Keyboard hint */}
+        <p className="text-[10px] text-white/20 mt-1.5">
+          Press <kbd className="px-1 py-0.5 bg-navy-700 rounded border border-white/10 font-mono text-white/30">Enter</kbd> to insert & advance
+        </p>
       </div>
 
       {/* Action Buttons */}

@@ -1,13 +1,24 @@
-import React, { useRef, useEffect, useCallback } from 'react';
+import React, { useRef, useEffect, useCallback, useMemo } from 'react';
 import { useAppState } from '../store/AppContext.jsx';
 
 /**
  * DocumentViewer — Renders the parsed DOCX as annotated HTML with clickable fields.
+ * 
+ * KEY DESIGN DECISIONS:
+ * 1. Insertions are displayed via CSS ::after pseudo-elements using data-attributes,
+ *    NOT via DOM manipulation. This prevents alignment disturbance.
+ * 2. "Click to fill" placeholders only appear on truly empty, unfilled fields.
+ * 3. Full keyboard navigation: Enter (confirm/next), Space (skip), Tab, Arrow keys, Escape.
  */
 export default function DocumentViewer() {
-  const { state, dispatch, ActionTypes } = useAppState();
+  const { state, dispatch, ActionTypes, sortedFieldIds, navigateToNextField, navigateToPrevField } = useAppState();
   const containerRef = useRef(null);
   const { document: doc, activeFieldId, insertions } = state;
+
+  /**
+   * Get the sorted list of field IDs for keyboard navigation.
+   */
+  const fieldIds = sortedFieldIds;
 
   /**
    * Handle click on a document field.
@@ -23,7 +34,94 @@ export default function DocumentViewer() {
   }, [dispatch, ActionTypes]);
 
   /**
-   * Update field highlights when active field or insertions change.
+   * Handle keyboard navigation within the document.
+   */
+  const handleKeyDown = useCallback((e) => {
+    if (!doc.isLoaded) return;
+    
+    // Only handle keyboard when no modal/textarea is focused
+    const activeElement = document.activeElement;
+    const isInputFocused = activeElement && (
+      activeElement.tagName === 'INPUT' ||
+      activeElement.tagName === 'TEXTAREA' ||
+      activeElement.tagName === 'SELECT' ||
+      activeElement.isContentEditable
+    );
+    if (isInputFocused) return;
+
+    switch (e.key) {
+      case 'Enter': {
+        e.preventDefault();
+        if (!activeFieldId) {
+          // If no field is active, select the first unfilled field
+          const firstUnfilled = fieldIds.find(id => !insertions[id]);
+          if (firstUnfilled) {
+            dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: firstUnfilled });
+          }
+        } else {
+          // Enter on an active field: if it has content, advance to next
+          if (insertions[activeFieldId]) {
+            navigateToNextField();
+          }
+        }
+        break;
+      }
+      case ' ': {
+        // Space: skip current field without filling, advance to next
+        e.preventDefault();
+        if (activeFieldId) {
+          dispatch({ type: ActionTypes.SKIP_FIELD });
+        }
+        break;
+      }
+      case 'Tab': {
+        e.preventDefault();
+        if (e.shiftKey) {
+          navigateToPrevField();
+        } else {
+          navigateToNextField();
+        }
+        break;
+      }
+      case 'ArrowDown':
+      case 'ArrowRight': {
+        if (activeFieldId) {
+          e.preventDefault();
+          navigateToNextField();
+        }
+        break;
+      }
+      case 'ArrowUp':
+      case 'ArrowLeft': {
+        if (activeFieldId) {
+          e.preventDefault();
+          navigateToPrevField();
+        }
+        break;
+      }
+      case 'Escape': {
+        if (activeFieldId) {
+          e.preventDefault();
+          dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
+        }
+        break;
+      }
+      default:
+        break;
+    }
+  }, [doc.isLoaded, activeFieldId, fieldIds, insertions, dispatch, ActionTypes, navigateToNextField, navigateToPrevField]);
+
+  /**
+   * Attach keyboard listener at document level.
+   */
+  useEffect(() => {
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  }, [handleKeyDown]);
+
+  /**
+   * Update field visual states (active, has-content, insertion data) via class + data-attribute.
+   * No DOM insertion of child elements — purely CSS-driven display.
    */
   useEffect(() => {
     if (!containerRef.current) return;
@@ -31,51 +129,42 @@ export default function DocumentViewer() {
     const fields = containerRef.current.querySelectorAll('[data-field-id]');
     fields.forEach((field) => {
       const id = field.getAttribute('data-field-id');
-      field.classList.remove('active');
-      field.classList.remove('has-content');
+      
+      // Clear all state classes
+      field.classList.remove('active', 'has-content', 'field-empty');
+      field.removeAttribute('data-insertion');
+      field.removeAttribute('data-field-status');
 
+      // Set active highlight
       if (id === activeFieldId) {
         field.classList.add('active');
+        // Smooth scroll to active field
         field.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
+
+      // If field has insertion content, show it via data-attribute + CSS
       if (insertions[id]) {
         field.classList.add('has-content');
+        field.setAttribute('data-insertion', insertions[id]);
+        field.setAttribute('data-field-status', 'filled');
+      } else {
+        // Mark as empty only if not active (prevent "Click to fill" showing while recording)
+        if (id !== activeFieldId) {
+          field.classList.add('field-empty');
+          field.setAttribute('data-field-status', 'empty');
+        }
       }
     });
   }, [activeFieldId, insertions]);
 
   /**
-   * Inject inserted text as visible overlays in the document.
+   * Field progress counter.
    */
-  useEffect(() => {
-    if (!containerRef.current) return;
-
-    // Remove previous insertion markers
-    containerRef.current.querySelectorAll('.insertion-text').forEach(el => el.remove());
-
-    // Add insertion text for each field
-    Object.entries(insertions).forEach(([fieldId, text]) => {
-      const field = containerRef.current.querySelector(`[data-field-id="${fieldId}"]`);
-      if (field) {
-        const marker = document.createElement('span');
-        marker.className = 'insertion-text';
-        marker.style.cssText = `
-          display: block;
-          margin-top: 4px;
-          padding: 4px 8px;
-          background: rgba(34, 197, 94, 0.08);
-          border-left: 3px solid #22C55E;
-          border-radius: 0 6px 6px 0;
-          font-size: 13px;
-          color: #86efac;
-          font-family: 'JetBrains Mono', monospace;
-          white-space: pre-wrap;
-        `;
-        marker.textContent = text;
-        field.appendChild(marker);
-      }
-    });
-  }, [insertions]);
+  const fieldProgress = useMemo(() => {
+    const total = fieldIds.length;
+    const filled = Object.keys(insertions).length;
+    return { total, filled, percentage: total > 0 ? Math.round((filled / total) * 100) : 0 };
+  }, [fieldIds, insertions]);
 
   if (!doc.isLoaded || !doc.html) {
     return (
@@ -102,8 +191,28 @@ export default function DocumentViewer() {
             </svg>
             <h2 className="text-sm font-semibold text-white/70">{doc.fileName}</h2>
           </div>
-          <div className="text-xs text-white/30">
-            Click any field to start recording →
+          <div className="flex items-center gap-3">
+            {/* Progress indicator */}
+            <div className="flex items-center gap-2">
+              <div className="w-24 h-1.5 bg-navy-700 rounded-full overflow-hidden">
+                <div
+                  className="h-full bg-gradient-to-r from-amber-400 to-green-400 rounded-full transition-all duration-500"
+                  style={{ width: `${fieldProgress.percentage}%` }}
+                />
+              </div>
+              <span className="text-xs text-white/40 font-mono">
+                {fieldProgress.filled}/{fieldProgress.total}
+              </span>
+            </div>
+            {/* Keyboard hint */}
+            <div className="hidden lg:flex items-center gap-1.5 text-[10px] text-white/25">
+              <kbd className="px-1.5 py-0.5 bg-navy-700 rounded border border-white/10 font-mono">Enter</kbd>
+              <span>next</span>
+              <kbd className="px-1.5 py-0.5 bg-navy-700 rounded border border-white/10 font-mono ml-1">Space</kbd>
+              <span>skip</span>
+              <kbd className="px-1.5 py-0.5 bg-navy-700 rounded border border-white/10 font-mono ml-1">Esc</kbd>
+              <span>deselect</span>
+            </div>
           </div>
         </div>
 

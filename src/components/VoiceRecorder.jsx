@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder.js';
 import { useGroqTranscription } from '../hooks/useGroqTranscription.js';
 import { useAppState } from '../store/AppContext.jsx';
@@ -6,16 +6,23 @@ import TranscriptPanel from './TranscriptPanel.jsx';
 
 /**
  * VoiceRecorder — Dual-mode panel: Voice dictation OR Manual text entry.
- * Shows a tab bar at top to switch between modes.
+ * 
+ * KEY FIXES:
+ * 1. Resets local state (manualText, mode) when activeFieldId changes
+ * 2. Uses context's navigateToNextField for reliable field advancement  
+ * 3. Proper cleanup of recording state on field switch
+ * 4. Auto-focuses textarea in type mode for immediate input
  */
 export default function VoiceRecorder() {
-  const { state, dispatch, ActionTypes, notify } = useAppState();
+  const { state, dispatch, ActionTypes, notify, navigateToNextField } = useAppState();
   const { activeFieldId } = state;
   const fieldInfo = state.document.fieldMap?.[activeFieldId];
 
   // Mode: 'voice' or 'type'
   const [mode, setMode] = useState('voice');
   const [manualText, setManualText] = useState('');
+  const textareaRef = useRef(null);
+  const prevFieldIdRef = useRef(null);
 
   const {
     isRecording,
@@ -43,6 +50,30 @@ export default function VoiceRecorder() {
     updatePolishedText,
   } = useGroqTranscription();
 
+  /**
+   * CRITICAL: Reset all local state when the active field changes.
+   * This prevents stale text from previous fields leaking into new ones.
+   */
+  useEffect(() => {
+    if (activeFieldId !== prevFieldIdRef.current) {
+      setManualText('');
+      resetRecording();
+      resetTranscription();
+      prevFieldIdRef.current = activeFieldId;
+    }
+  }, [activeFieldId]); // intentionally omit resetRecording/resetTranscription to avoid infinite loops
+
+  /**
+   * Auto-focus textarea when switching to type mode.
+   */
+  useEffect(() => {
+    if (mode === 'type' && textareaRef.current) {
+      // Small delay to ensure DOM is ready
+      const timer = setTimeout(() => textareaRef.current?.focus(), 50);
+      return () => clearTimeout(timer);
+    }
+  }, [mode, activeFieldId]);
+
   if (!state.ui.showRecorder || !activeFieldId) return null;
 
   const handleStop = () => {
@@ -62,10 +93,18 @@ export default function VoiceRecorder() {
     resetTranscription();
   };
 
+  /**
+   * Insert text into the document and advance to the next field.
+   * Uses the centralized navigateToNextField helper for consistency.
+   */
   const handleInsert = (text) => {
+    if (!text || !text.trim()) return;
+
+    const trimmedText = text.trim();
+
     dispatch({
       type: ActionTypes.INSERT_TEXT,
-      payload: { fieldId: activeFieldId, text },
+      payload: { fieldId: activeFieldId, text: trimmedText },
     });
 
     // Add to audit trail
@@ -76,30 +115,22 @@ export default function VoiceRecorder() {
         fieldLabel: fieldInfo?.label || activeFieldId,
         language: state.settings.language,
         rawText: mode === 'voice' ? rawText : '',
-        polishedText: text,
+        polishedText: trimmedText,
         audioBlob: mode === 'voice' && state.settings.retainAudio ? audioBlob : null,
         audioUrl: mode === 'voice' && state.settings.retainAudio ? audioUrl : null,
         inputMode: mode,
       },
     });
 
-    const fieldMapping = Object.entries(state.document.fieldMap || {});
-    // Sort array identically to DOM mapping if indices exist
-    fieldMapping.sort((a, b) => a[1].index - b[1].index);
-    const keys = fieldMapping.map(f => f[0]);
-    const currentIndex = keys.indexOf(activeFieldId);
-    
-    let nextFieldId = null;
-    if (currentIndex >= 0 && currentIndex < keys.length - 1) {
-      nextFieldId = keys[currentIndex + 1];
-    }
+    // Clear local state before advancing
+    setManualText('');
 
-    if (nextFieldId) {
-      dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: nextFieldId });
-      notify('Inserted text and jumped to next field', 'success');
+    // Advance to next field
+    const nextId = navigateToNextField();
+    if (nextId) {
+      notify(`Inserted → moved to next field`, 'success');
     } else {
-      dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
-      notify('Text inserted. Form complete.', 'success');
+      notify('Text inserted. All fields complete! 🎉', 'success');
     }
   };
 
@@ -110,10 +141,20 @@ export default function VoiceRecorder() {
     dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
   };
 
-  const handleKeyDown = (e) => {
+  /**
+   * Handle key events in the manual text area.
+   * Enter (without shift) → insert text and advance.
+   */
+  const handleTextareaKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      e.stopPropagation(); // Prevent document-level handler from also firing
       handleManualInsert();
+    }
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      e.stopPropagation();
+      handleDiscard();
     }
   };
 
@@ -123,6 +164,13 @@ export default function VoiceRecorder() {
   };
 
   const hasTranscript = rawText || polishedText;
+
+  // Compute field position for progress display
+  const fieldEntries = Object.entries(state.document.fieldMap || {});
+  fieldEntries.sort((a, b) => a[1].index - b[1].index);
+  const fieldKeys = fieldEntries.map(([id]) => id);
+  const currentFieldIndex = fieldKeys.indexOf(activeFieldId);
+  const totalFields = fieldKeys.length;
 
   return (
     <div className="w-96 border-l border-white/5 bg-navy-950 flex flex-col animate-fade-in">
@@ -152,10 +200,19 @@ export default function VoiceRecorder() {
 
       {/* Active Field Info */}
       <div className="px-4 py-2 bg-amber-400/5 border-b border-amber-400/10">
-        <p className="text-xs text-amber-400/70">Filling field:</p>
-        <p className="text-sm font-mono text-amber-400 truncate">
-          {fieldInfo?.label || activeFieldId}
-        </p>
+        <div className="flex items-center justify-between">
+          <div className="min-w-0 flex-1">
+            <p className="text-xs text-amber-400/70">Filling field:</p>
+            <p className="text-sm font-mono text-amber-400 truncate">
+              {fieldInfo?.label || activeFieldId}
+            </p>
+          </div>
+          {totalFields > 0 && (
+            <span className="text-xs text-white/30 font-mono ml-2 shrink-0">
+              {currentFieldIndex + 1}/{totalFields}
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Mode Tab Switcher */}
@@ -415,6 +472,7 @@ export default function VoiceRecorder() {
             </div>
 
             <textarea
+              ref={textareaRef}
               value={manualText}
               onChange={(e) => setManualText(e.target.value)}
               placeholder="Type the text you want to insert into this field..."
@@ -423,8 +481,7 @@ export default function VoiceRecorder() {
                          focus:outline-none focus:border-blue-400/40 focus:ring-1 focus:ring-blue-400/20
                          placeholder-white/20 transition-all"
               id="manual-text-input"
-              autoFocus
-              onKeyDown={handleKeyDown}
+              onKeyDown={handleTextareaKeyDown}
             />
 
             {/* Character count */}
@@ -443,14 +500,16 @@ export default function VoiceRecorder() {
             </div>
           </div>
 
-          {/* Tip */}
+          {/* Keyboard shortcuts tip */}
           <div className="px-4 pb-2">
             <div className="flex items-start gap-2 bg-blue-500/5 border border-blue-500/10 rounded-lg px-3 py-2">
               <svg className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
               </svg>
               <p className="text-[11px] text-blue-400/60 leading-relaxed">
-                Type directly or paste text into the field. Use the Voice tab to dictate instead.
+                Press <kbd className="px-1 py-0.5 bg-navy-700 rounded text-blue-300 mx-0.5">Enter</kbd> to insert & advance · 
+                <kbd className="px-1 py-0.5 bg-navy-700 rounded text-blue-300 mx-0.5">Shift+Enter</kbd> for new line · 
+                <kbd className="px-1 py-0.5 bg-navy-700 rounded text-blue-300 mx-0.5">Esc</kbd> to close
               </p>
             </div>
           </div>
@@ -475,8 +534,7 @@ export default function VoiceRecorder() {
                          hover:bg-red-500/20 hover:border-red-500/20 transition-all text-white/40 hover:text-red-400"
               title="Discard and Close Panel"
             >
-              <span className="text-xs font-medium mr-1 uppercase" style={{fontSize: '9px'}}>Close</span>
-              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
