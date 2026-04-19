@@ -9,9 +9,7 @@
   box-sizing: border-box;
 }
 
-html,
-body,
-#root {
+html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
@@ -47,12 +45,11 @@ body {
 
 /* ─── Document Viewer Field Styles ───────────────────────────────────────── */
 .doc-field {
-  cursor: text;
+  cursor: pointer;
   transition: all 0.2s ease;
   border-radius: 4px;
   padding: 2px 4px;
   position: relative;
-  min-height: 1.5em;
 }
 
 .doc-field:hover {
@@ -72,20 +69,15 @@ body {
 }
 
 .doc-field.has-content::after {
-  content: '✓';
+  content: '';
   position: absolute;
-  top: -6px;
-  right: -6px;
+  top: -4px;
+  right: -4px;
+  width: 10px;
+  height: 10px;
   background: #22C55E;
-  color: white;
-  font-size: 10px;
-  width: 16px;
-  height: 16px;
   border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  line-height: 1;
+  border: 2px solid #0D1B2A;
 }
 
 /* ─── Document Rendered Content ──────────────────────────────────────────── */
@@ -100,6 +92,7 @@ body {
   border-collapse: collapse;
   width: 100%;
   margin: 12px 0;
+  table-layout: fixed;
 }
 
 .document-content td,
@@ -108,6 +101,8 @@ body {
   padding: 8px 12px;
   text-align: left;
   vertical-align: top;
+  word-wrap: break-word;
+  overflow-wrap: break-word;
 }
 
 .document-content th {
@@ -124,34 +119,38 @@ body {
   margin: 6px 0;
 }
 
-.document-content h1,
-.document-content h2,
-.document-content h3 {
+.document-content h1, .document-content h2, .document-content h3 {
   color: #F5A623;
   margin: 16px 0 8px 0;
 }
 
-.document-content h1 {
-  font-size: 1.4em;
-}
-
-.document-content h2 {
-  font-size: 1.2em;
-}
-
-.document-content h3 {
-  font-size: 1.1em;
-}
+.document-content h1 { font-size: 1.4em; }
+.document-content h2 { font-size: 1.2em; }
+.document-content h3 { font-size: 1.1em; }
 
 .document-content strong {
   color: #FFFFFF;
   font-weight: 600;
 }
 
-.document-content ul,
-.document-content ol {
+.document-content ul, .document-content ol {
   padding-left: 24px;
   margin: 8px 0;
+}
+
+/* ─── Insertion text overlay ─────────────────────────────────────────────── */
+.insertion-text {
+  display: inline;
+  margin-left: 6px;
+  padding: 1px 6px;
+  background: rgba(29, 78, 216, 0.12);
+  border-left: 2px solid #1D4ED8;
+  border-radius: 0 4px 4px 0;
+  font-size: 13px;
+  color: #60A5FA;
+  font-family: 'JetBrains Mono', monospace;
+  font-weight: 600;
+  white-space: pre-wrap;
 }
 
 /* ─── Recording State Dimming ────────────────────────────────────────────── */
@@ -179,11 +178,9 @@ body {
   0% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.7);
   }
-
   70% {
     box-shadow: 0 0 0 12px rgba(239, 68, 68, 0);
   }
-
   100% {
     box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
   }
@@ -273,4 +270,60 @@ body {
   @apply text-white placeholder-white/30;
   @apply focus:outline-none focus:border-amber-400 focus:ring-1 focus:ring-amber-400/30;
   @apply transition-all duration-200;
+}
+
+/* ─── Drag & Drop Overlay ────────────────────────────────────────────────── */
+body.drag-active::after {
+  content: '📄 Drop .docx file here';
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(13, 27, 42, 0.92);
+  border: 3px dashed rgba(245, 166, 35, 0.6);
+  border-radius: 16px;
+  margin: 16px;
+  font-size: 1.5rem;
+  font-weight: 600;
+  color: #F5A623;
+  pointer-events: none;
+  animation: fadeIn 0.2s ease-out;
+}
+
+/* ─── Selection highlight ────────────────────────────────────────────────── */
+::selection {
+  background: rgba(245, 166, 35, 0.3);
+  color: #fff;
+}
+
+/* ─── Focus-visible for accessibility ────────────────────────────────────── */
+button:focus-visible, a:focus-visible, input:focus-visible, textarea:focus-visible, select:focus-visible {
+  outline: 2px solid #F5A623;
+  outline-offset: 2px;
+}
+
+/* ─── Keyboard shortcut hints bar ────────────────────────────────────────── */
+.shortcut-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  background: rgba(27, 40, 56, 0.6);
+  border-top: 1px solid rgba(255, 255, 255, 0.05);
+  font-size: 11px;
+  color: rgba(255, 255, 255, 0.3);
+}
+
+.shortcut-bar kbd {
+  display: inline-block;
+  padding: 1px 6px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 4px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  color: rgba(255, 255, 255, 0.5);
+  margin-right: 4px;
 }
