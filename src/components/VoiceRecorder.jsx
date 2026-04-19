@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState } from 'react';
 import { useAudioRecorder } from '../hooks/useAudioRecorder.js';
 import { useGroqTranscription } from '../hooks/useGroqTranscription.js';
 import { useAppState } from '../store/AppContext.jsx';
@@ -12,10 +12,9 @@ export default function VoiceRecorder() {
   const { state, dispatch, ActionTypes, notify } = useAppState();
   const { activeFieldId } = state;
   const fieldInfo = state.document.fieldMap?.[activeFieldId];
-  const textareaRef = useRef(null);
 
   // Mode: 'voice' or 'type'
-  const [mode, setMode] = useState('type');
+  const [mode, setMode] = useState('voice');
   const [manualText, setManualText] = useState('');
 
   const {
@@ -44,14 +43,6 @@ export default function VoiceRecorder() {
     updatePolishedText,
   } = useGroqTranscription();
 
-  // Reset manual text and focus textarea when active field changes
-  useEffect(() => {
-    setManualText('');
-    if (mode === 'type' && textareaRef.current) {
-      setTimeout(() => textareaRef.current?.focus(), 100);
-    }
-  }, [activeFieldId]);
-
   if (!state.ui.showRecorder || !activeFieldId) return null;
 
   const handleStop = () => {
@@ -72,11 +63,9 @@ export default function VoiceRecorder() {
   };
 
   const handleInsert = (text) => {
-    if (!text || !text.trim()) return;
-
     dispatch({
       type: ActionTypes.INSERT_TEXT,
-      payload: { fieldId: activeFieldId, text: text.trim() },
+      payload: { fieldId: activeFieldId, text },
     });
 
     // Add to audit trail
@@ -87,35 +76,30 @@ export default function VoiceRecorder() {
         fieldLabel: fieldInfo?.label || activeFieldId,
         language: state.settings.language,
         rawText: mode === 'voice' ? rawText : '',
-        polishedText: text.trim(),
+        polishedText: text,
         audioBlob: mode === 'voice' && state.settings.retainAudio ? audioBlob : null,
         audioUrl: mode === 'voice' && state.settings.retainAudio ? audioUrl : null,
         inputMode: mode,
       },
     });
 
-    // Auto-advance to next field
     const fieldMapping = Object.entries(state.document.fieldMap || {});
-    fieldMapping.sort((a, b) => (a[1].index ?? 0) - (b[1].index ?? 0));
+    // Sort array identically to DOM mapping if indices exist
+    fieldMapping.sort((a, b) => a[1].index - b[1].index);
     const keys = fieldMapping.map(f => f[0]);
     const currentIndex = keys.indexOf(activeFieldId);
-
+    
     let nextFieldId = null;
     if (currentIndex >= 0 && currentIndex < keys.length - 1) {
       nextFieldId = keys[currentIndex + 1];
     }
 
-    // Reset state for next field
-    setManualText('');
-    resetRecording();
-    resetTranscription();
-
     if (nextFieldId) {
       dispatch({ type: ActionTypes.SET_ACTIVE_FIELD, payload: nextFieldId });
-      notify(`✓ Inserted → moved to next field`, 'success');
+      notify('Inserted text and jumped to next field', 'success');
     } else {
       dispatch({ type: ActionTypes.CLEAR_ACTIVE_FIELD });
-      notify('✓ All fields complete!', 'success');
+      notify('Text inserted. Form complete.', 'success');
     }
   };
 
@@ -129,10 +113,13 @@ export default function VoiceRecorder() {
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
-      if (manualText.trim()) {
-        handleInsert(manualText.trim());
-      }
+      handleManualInsert();
     }
+  };
+
+  const handleManualInsert = () => {
+    if (!manualText.trim()) return;
+    handleInsert(manualText.trim());
   };
 
   const hasTranscript = rawText || polishedText;
@@ -155,7 +142,7 @@ export default function VoiceRecorder() {
         <button
           onClick={handleDiscard}
           className="text-white/30 hover:text-white/60 transition-colors"
-          title="Close (Esc)"
+          title="Close"
         >
           <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -393,41 +380,45 @@ export default function VoiceRecorder() {
               <button
                 onClick={() => handleInsert('Yes')}
                 className="flex-1 bg-green-500/10 hover:bg-green-500/20 text-green-400 border border-green-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: Yes"
               >
                 Yes
               </button>
               <button
                 onClick={() => handleInsert('No')}
                 className="flex-1 bg-red-500/10 hover:bg-red-500/20 text-red-500 border border-red-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: No"
               >
                 No
               </button>
               <button
                 onClick={() => handleInsert('N/A')}
                 className="flex-1 bg-navy-600 hover:bg-navy-500 text-white/70 border border-white/10 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: N/A"
               >
                 N/A
               </button>
               <button
-                onClick={() => handleInsert('✓')}
+                onClick={() => handleInsert('✔')}
                 className="flex-1 bg-blue-500/10 hover:bg-blue-500/20 text-blue-400 border border-blue-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: Tick mark"
               >
-                ✓ Tick
+                ✔ Tick
               </button>
               <button
                 onClick={() => handleInsert('✗')}
                 className="flex-1 bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/20 rounded-md py-1.5 text-xs font-medium transition-colors"
+                title="Quick Insert: Cross mark"
               >
                 ✗ Cross
               </button>
             </div>
 
             <textarea
-              ref={textareaRef}
               value={manualText}
               onChange={(e) => setManualText(e.target.value)}
-              placeholder="Type text and press Enter to insert..."
-              className="w-full flex-1 min-h-[140px] bg-navy-800/50 border border-white/5 rounded-lg p-4
+              placeholder="Type the text you want to insert into this field..."
+              className="w-full flex-1 min-h-[200px] bg-navy-800/50 border border-white/5 rounded-lg p-4
                          text-sm text-white leading-relaxed font-mono resize-none
                          focus:outline-none focus:border-blue-400/40 focus:ring-1 focus:ring-blue-400/20
                          placeholder-white/20 transition-all"
@@ -439,7 +430,7 @@ export default function VoiceRecorder() {
             {/* Character count */}
             <div className="flex items-center justify-between mt-2">
               <p className="text-xs text-white/20">
-                {manualText.length} chars · <kbd className="text-[10px] bg-white/5 px-1 rounded">Enter</kbd> to insert
+                {manualText.length} characters
               </p>
               {manualText.length > 0 && (
                 <button
@@ -452,10 +443,22 @@ export default function VoiceRecorder() {
             </div>
           </div>
 
+          {/* Tip */}
+          <div className="px-4 pb-2">
+            <div className="flex items-start gap-2 bg-blue-500/5 border border-blue-500/10 rounded-lg px-3 py-2">
+              <svg className="w-3.5 h-3.5 text-blue-400 shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 16h-1v-4h-1m1-4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+              </svg>
+              <p className="text-[11px] text-blue-400/60 leading-relaxed">
+                Type directly or paste text into the field. Use the Voice tab to dictate instead.
+              </p>
+            </div>
+          </div>
+
           {/* Action Buttons */}
           <div className="px-4 py-3 border-t border-white/5 flex items-center gap-2">
             <button
-              onClick={() => { if (manualText.trim()) handleInsert(manualText.trim()); }}
+              onClick={handleManualInsert}
               disabled={!manualText.trim()}
               className="btn-success flex items-center gap-1.5 text-sm flex-1 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
               id="manual-insert-button"
@@ -470,8 +473,9 @@ export default function VoiceRecorder() {
               onClick={handleDiscard}
               className="w-9 h-9 rounded-lg bg-navy-700 border border-white/5 flex items-center justify-center
                          hover:bg-red-500/20 hover:border-red-500/20 transition-all text-white/40 hover:text-red-400"
-              title="Close panel (Esc)"
+              title="Discard and Close Panel"
             >
+              <span className="text-xs font-medium mr-1 uppercase" style={{fontSize: '9px'}}>Close</span>
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
               </svg>
