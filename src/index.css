@@ -191,6 +191,35 @@ td.doc-field[data-insertion]::after {
   background: #F87171;
 }
 
+/* ── Field Media (Photos / Signatures) ───────────────────────────────────── */
+.field-media {
+  display: block;
+  margin-top: 6px;
+  pointer-events: none;
+}
+
+.field-media-inner {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(96, 165, 250, 0.06);
+  border: 1px solid rgba(96, 165, 250, 0.15);
+  border-radius: 6px;
+}
+
+.field-media-img {
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.field-media-label {
+  font-size: 10px;
+  color: #60A5FA;
+  font-weight: 500;
+}
+
 /* ─── Document Rendered Content ──────────────────────────────────────────── */
 .document-content {
   font-family: 'JetBrains Mono', 'Fira Code', monospace;

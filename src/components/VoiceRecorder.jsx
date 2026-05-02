@@ -3,6 +3,7 @@ import { useAudioRecorder } from '../hooks/useAudioRecorder.js';
 import { useGroqTranscription } from '../hooks/useGroqTranscription.js';
 import { useAppState } from '../store/AppContext.jsx';
 import TranscriptPanel from './TranscriptPanel.jsx';
+import SignaturePad from './SignaturePad.jsx';
 
 /**
  * VoiceRecorder — Dual-mode panel: Voice dictation OR Manual text entry.
@@ -18,10 +19,12 @@ export default function VoiceRecorder() {
   const { activeFieldId } = state;
   const fieldInfo = state.document.fieldMap?.[activeFieldId];
 
-  // Mode: 'voice' or 'type'
+  // Mode: 'voice' | 'type' | 'photo' | 'sign'
   const [mode, setMode] = useState('voice');
   const [manualText, setManualText] = useState('');
   const textareaRef = useRef(null);
+  const photoInputRef = useRef(null);
+  const [photoPreview, setPhotoPreview] = useState(null);
   const prevFieldIdRef = useRef(null);
 
   const {
@@ -215,37 +218,28 @@ export default function VoiceRecorder() {
         </div>
       </div>
 
-      {/* Mode Tab Switcher */}
+      {/* Mode Tab Switcher — 4 tabs */}
       <div className="flex border-b border-white/5">
-        <button
-          onClick={() => setMode('voice')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-all duration-200
-            ${mode === 'voice'
-              ? 'text-amber-400 border-b-2 border-amber-400 bg-amber-400/5'
-              : 'text-white/40 hover:text-white/60 hover:bg-white/[0.02]'
-            }`}
-          id="mode-voice"
-        >
-          <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 24 24">
-            <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/>
-            <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
-          </svg>
-          Voice
-        </button>
-        <button
-          onClick={() => setMode('type')}
-          className={`flex-1 flex items-center justify-center gap-2 py-2.5 text-sm font-medium transition-all duration-200
-            ${mode === 'type'
-              ? 'text-blue-400 border-b-2 border-blue-400 bg-blue-400/5'
-              : 'text-white/40 hover:text-white/60 hover:bg-white/[0.02]'
-            }`}
-          id="mode-type"
-        >
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-          </svg>
-          Type
-        </button>
+        {[
+          { id: 'voice', label: 'Voice', color: 'amber', icon: <svg className="w-3.5 h-3.5" fill="currentColor" viewBox="0 0 24 24"><path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3z"/><path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/></svg> },
+          { id: 'type', label: 'Type', color: 'blue', icon: <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg> },
+          { id: 'photo', label: 'Photo', color: 'green', icon: <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg> },
+          { id: 'sign', label: 'Sign', color: 'purple', icon: <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" /></svg> },
+        ].map(tab => (
+          <button
+            key={tab.id}
+            onClick={() => setMode(tab.id)}
+            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-medium transition-all duration-200
+              ${mode === tab.id
+                ? `text-${tab.color}-400 border-b-2 border-${tab.color}-400 bg-${tab.color}-400/5`
+                : 'text-white/40 hover:text-white/60 hover:bg-white/[0.02]'
+              }`}
+            id={`mode-${tab.id}`}
+          >
+            {tab.icon}
+            {tab.label}
+          </button>
+        ))}
       </div>
 
       {/* ═══════════ VOICE MODE ═══════════ */}
@@ -540,6 +534,135 @@ export default function VoiceRecorder() {
             </button>
           </div>
         </div>
+      )}
+
+      {/* ═══════════ PHOTO MODE ═══════════ */}
+      {mode === 'photo' && (
+        <div className="flex-1 flex flex-col">
+          <div className="flex-1 px-4 py-4">
+            <label className="block text-xs font-medium text-white/40 mb-2 uppercase tracking-wider">
+              Insert a photo into this field
+            </label>
+
+            {!photoPreview ? (
+              <div
+                className="border-2 border-dashed border-white/10 rounded-lg p-8 text-center hover:border-green-400/30 transition-colors cursor-pointer"
+                onClick={() => photoInputRef.current?.click()}
+                onDragOver={(e) => { e.preventDefault(); e.currentTarget.classList.add('border-green-400/40'); }}
+                onDragLeave={(e) => { e.preventDefault(); e.currentTarget.classList.remove('border-green-400/40'); }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.currentTarget.classList.remove('border-green-400/40');
+                  const file = e.dataTransfer.files[0];
+                  if (file && file.type.startsWith('image/')) {
+                    const reader = new FileReader();
+                    reader.onload = (ev) => setPhotoPreview(ev.target.result);
+                    reader.readAsDataURL(file);
+                  }
+                }}
+              >
+                <svg className="w-10 h-10 text-white/20 mx-auto mb-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                <p className="text-sm text-white/40 mb-1">Click to browse or drag & drop</p>
+                <p className="text-xs text-white/20">PNG, JPG, WEBP supported</p>
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="relative rounded-lg overflow-hidden border border-white/10 bg-navy-800">
+                  <img src={photoPreview} alt="Preview" className="w-full max-h-[200px] object-contain" />
+                  <button
+                    onClick={() => setPhotoPreview(null)}
+                    className="absolute top-2 right-2 w-6 h-6 rounded-full bg-red-500/80 text-white flex items-center justify-center text-xs hover:bg-red-500 transition-colors"
+                  >✕</button>
+                </div>
+                <p className="text-xs text-white/30 text-center">Photo ready to insert</p>
+              </div>
+            )}
+
+            <input
+              ref={photoInputRef}
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files[0];
+                if (file) {
+                  const reader = new FileReader();
+                  reader.onload = (ev) => setPhotoPreview(ev.target.result);
+                  reader.readAsDataURL(file);
+                }
+                e.target.value = '';
+              }}
+            />
+          </div>
+
+          {/* Action Buttons */}
+          <div className="px-4 py-3 border-t border-white/5 flex items-center gap-2">
+            <button
+              onClick={() => {
+                if (!photoPreview) return;
+                dispatch({
+                  type: ActionTypes.INSERT_IMAGE,
+                  payload: { fieldId: activeFieldId, dataUrl: photoPreview, label: 'Photo' },
+                });
+                dispatch({
+                  type: ActionTypes.ADD_AUDIT_ENTRY,
+                  payload: {
+                    fieldId: activeFieldId,
+                    fieldLabel: fieldInfo?.label || activeFieldId,
+                    polishedText: '[Photo inserted]',
+                    inputMode: 'photo',
+                  },
+                });
+                setPhotoPreview(null);
+                const nextId = navigateToNextField();
+                notify(nextId ? 'Photo inserted → next field' : 'Photo inserted! 🎉', 'success');
+              }}
+              disabled={!photoPreview}
+              className="btn-success flex items-center gap-1.5 text-sm flex-1 justify-center disabled:opacity-50 disabled:cursor-not-allowed"
+              id="photo-insert-button"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+              </svg>
+              Insert Photo
+            </button>
+            <button
+              onClick={handleDiscard}
+              className="w-9 h-9 rounded-lg bg-navy-700 border border-white/5 flex items-center justify-center hover:bg-red-500/20 hover:border-red-500/20 transition-all text-white/40 hover:text-red-400"
+              title="Close"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ═══════════ SIGN MODE ═══════════ */}
+      {mode === 'sign' && (
+        <SignaturePad
+          onSign={(dataUrl) => {
+            dispatch({
+              type: ActionTypes.INSERT_SIGNATURE,
+              payload: { fieldId: activeFieldId, dataUrl },
+            });
+            dispatch({
+              type: ActionTypes.ADD_AUDIT_ENTRY,
+              payload: {
+                fieldId: activeFieldId,
+                fieldLabel: fieldInfo?.label || activeFieldId,
+                polishedText: '[Electronic signature]',
+                inputMode: 'sign',
+              },
+            });
+            const nextId = navigateToNextField();
+            notify(nextId ? 'Signature inserted → next field' : 'Signature inserted! 🎉', 'success');
+          }}
+          onCancel={handleDiscard}
+        />
       )}
     </div>
   );

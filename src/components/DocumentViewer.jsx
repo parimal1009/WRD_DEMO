@@ -164,11 +164,35 @@ export default function DocumentViewer() {
         field.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
 
-      // If field has insertion content, show it via data-attribute + CSS
-      if (insertions[id]) {
+      // If field has insertion content, show it
+      const insertion = insertions[id];
+      if (insertion) {
         field.classList.add('has-content');
-        field.setAttribute('data-insertion', insertions[id]);
         field.setAttribute('data-field-status', 'filled');
+
+        // Remove any previously injected media
+        const existingMedia = field.querySelector('.field-media');
+        if (existingMedia) existingMedia.remove();
+
+        // Check if insertion is an image/signature object or plain text
+        if (typeof insertion === 'object' && insertion.dataUrl) {
+          // Image or signature — inject an img element
+          const mediaDiv = document.createElement('div');
+          mediaDiv.className = 'field-media';
+          const label = insertion.type === 'signature' ? '✍ Signature' : '📷 Photo';
+          mediaDiv.innerHTML = `
+            <div class="field-media-inner">
+              <img src="${insertion.dataUrl}" alt="${label}"
+                   style="max-width:${insertion.width || 200}px; max-height:${insertion.height || 150}px;"
+                   class="field-media-img" />
+              <span class="field-media-label">${label}</span>
+            </div>
+          `;
+          field.appendChild(mediaDiv);
+        } else {
+          // Plain text — use CSS ::after via data-attribute
+          field.setAttribute('data-insertion', insertion);
+        }
 
         // Inject edit/remove action buttons
         const actionsDiv = document.createElement('span');

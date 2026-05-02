@@ -1,117 +1,155 @@
 /**
  * DOCX Writer Service
- * Inserts text into an existing .docx file using JSZip + raw string splicing.
+ * Inserts text AND images into an existing .docx file using JSZip + raw XML splicing.
  *
- * Architecture:
- * The docxParser mathematically mapped every clickable visual element to a flat 
- * RAW paragraph index (fieldMeta.index). We find all paragraph ends in the raw XML 
- * and splice the user text precisely at that matched paragraph index.
- * No XML serializers used. Zero data corruption.
+ * - Text insertions: splice a <w:r> run before </w:p> at the matched paragraph index.
+ * - Image insertions (photos/signatures): embed PNG into the zip, register a
+ *   relationship, and inject a <w:drawing> element at the target paragraph.
  */
 import JSZip from 'jszip';
 
 /**
- * Insert text into an existing .docx file.
- * @param {ArrayBuffer} originalBuffer - The original .docx file as ArrayBuffer
- * @param {Object} insertions - Map of fieldId -> text to insert
- * @param {Object} fieldMap - Map of fieldId -> { type, index, label }
- * @returns {Promise<string>} Base64-encoded modified .docx file
+ * Insert text/images into an existing .docx file.
+ * @param {ArrayBuffer} originalBuffer
+ * @param {Object} insertions - fieldId -> text string OR { type, dataUrl, width, height }
+ * @param {Object} fieldMap - fieldId -> { type, index, label }
+ * @returns {Promise<string>} Base64-encoded modified .docx
  */
 export async function insertTextIntoDocx(originalBuffer, insertions, fieldMap) {
-  if (!originalBuffer) {
-    throw new Error('No document buffer provided');
-  }
-  
+  if (!originalBuffer) throw new Error('No document buffer provided');
+
   const jszip = new JSZip();
   const zip = await jszip.loadAsync(originalBuffer);
   const docXmlFile = zip.file('word/document.xml');
-  
-  if (!docXmlFile) {
-    throw new Error('Invalid .docx: missing word/document.xml');
-  }
-  
+  if (!docXmlFile) throw new Error('Invalid .docx: missing word/document.xml');
+
   const xmlString = await docXmlFile.async('text');
+
+  // ── Relationship management for images ──
+  let relsXml = '';
+  const relsFile = zip.file('word/_rels/document.xml.rels');
+  if (relsFile) {
+    relsXml = await relsFile.async('text');
+  } else {
+    relsXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+      '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"></Relationships>';
+  }
+
+  // Find highest existing rId
+  let maxRId = 0;
+  const ridRegex = /Id="rId(\d+)"/g;
+  let ridMatch;
+  while ((ridMatch = ridRegex.exec(relsXml)) !== null) {
+    maxRId = Math.max(maxRId, parseInt(ridMatch[1], 10));
+  }
+  let nextRId = maxRId + 1;
+  const newRelEntries = [];
 
   // Build injection tasks
   const injectionTasks = [];
 
-  for (const [fieldId, textToInsert] of Object.entries(insertions)) {
-    if (!textToInsert) continue;
-
+  for (const [fieldId, insertion] of Object.entries(insertions)) {
+    if (!insertion) continue;
     const fieldMeta = fieldMap[fieldId];
-    if (!fieldMeta) continue;
-    if (fieldMeta.index === undefined || fieldMeta.index < 0) continue;
+    if (!fieldMeta || fieldMeta.index === undefined || fieldMeta.index < 0) continue;
 
-    // Both table cells and regular paragraphs now store the exact P index in fieldMeta.index
-    injectionTasks.push({ pIndex: fieldMeta.index, textToInsert });
+    if (typeof insertion === 'object' && insertion.dataUrl) {
+      // ── Image / Signature ──
+      const rId = `rId${nextRId++}`;
+      const imgFile = `media/img_${fieldMeta.index}.png`;
+      const b64 = insertion.dataUrl.split(',')[1];
+      if (!b64) continue;
+
+      zip.file(`word/${imgFile}`, b64, { base64: true });
+      newRelEntries.push(
+        `<Relationship Id="${rId}" ` +
+        `Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" ` +
+        `Target="${imgFile}"/>`
+      );
+
+      const cx = (insertion.width || 200) * 9525;
+      const cy = (insertion.height || 60) * 9525;
+      const dpId = fieldMeta.index + 100;
+
+      const drawXml =
+        `<w:r><w:drawing>` +
+        `<wp:inline distT="0" distB="0" distL="0" distR="0">` +
+        `<wp:extent cx="${cx}" cy="${cy}"/>` +
+        `<wp:docPr id="${dpId}" name="Img${dpId}"/>` +
+        `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">` +
+        `<a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">` +
+        `<pic:nvPicPr><pic:cNvPr id="${dpId}" name="Img${dpId}"/><pic:cNvPicPr/></pic:nvPicPr>` +
+        `<pic:blipFill>` +
+        `<a:blip r:embed="${rId}" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"/>` +
+        `<a:stretch><a:fillRect/></a:stretch></pic:blipFill>` +
+        `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${cx}" cy="${cy}"/></a:xfrm>` +
+        `<a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr>` +
+        `</pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
+
+      injectionTasks.push({ pIndex: fieldMeta.index, payload: drawXml });
+    } else if (typeof insertion === 'string' && insertion) {
+      // ── Text ──
+      const xmlRun =
+        `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr>` +
+        `<w:t xml:space="preserve"> ${escapeXml(insertion)}</w:t></w:r>`;
+      injectionTasks.push({ pIndex: fieldMeta.index, payload: xmlRun });
+    }
   }
 
   if (injectionTasks.length === 0) {
-    // No insertions to make, return original
-    const base64 = await zip.generateAsync({ type: 'base64' });
-    return base64;
+    return await zip.generateAsync({ type: 'base64' });
   }
 
-  // Find all </w:p> and self-closing <w:p.../> positions in the raw XML string
-  const paragraphEnds = [];
-  const regex = /(<\/w:p>|<w:p(?: [^>]*)?\/>)/g;
-  let match;
-  while ((match = regex.exec(xmlString)) !== null) {
-    paragraphEnds.push({
-      index: match.index,
-      length: match[0].length,
-      isSelfClosing: match[0].endsWith('/>')
-    });
+  // Update rels if images were added
+  if (newRelEntries.length > 0) {
+    const idx = relsXml.lastIndexOf('</Relationships>');
+    relsXml = relsXml.substring(0, idx) + newRelEntries.join('') + relsXml.substring(idx);
+    zip.file('word/_rels/document.xml.rels', relsXml);
   }
 
-  // Group tasks by splice position, then apply back-to-front
-  const groupedTasks = {};
+  // Find all paragraph ends
+  const pEnds = [];
+  const pRegex = /(<\/w:p>|<w:p(?: [^>]*)?\/>)/g;
+  let m;
+  while ((m = pRegex.exec(xmlString)) !== null) {
+    pEnds.push({ index: m.index, length: m[0].length, selfClose: m[0].endsWith('/>') });
+  }
+
+  // Group by splice position
+  const grouped = {};
   for (const task of injectionTasks) {
-    const pEnd = paragraphEnds[task.pIndex];
-    if (!pEnd) {
-      console.warn(`Writer: paragraph index ${task.pIndex} not found in XML (total: ${paragraphEnds.length})`);
-      continue;
-    }
+    const pEnd = pEnds[task.pIndex];
+    if (!pEnd) { console.warn(`Writer: pIndex ${task.pIndex} not found`); continue; }
 
-    // Build the XML run to inject
-    const xmlRun = `<w:r><w:rPr><w:b/><w:color w:val="1D4ED8"/></w:rPr><w:t xml:space="preserve"> ${escapeXml(task.textToInsert)}</w:t></w:r>`;
-
-    let splicePos, spliceEndPos, payload;
-
-    if (pEnd.isSelfClosing) {
-      // Convert self-closing <w:p .../> to <w:p ...>{run}</w:p>
-      splicePos = pEnd.index + pEnd.length - 2;
-      spliceEndPos = pEnd.index + pEnd.length;
-      payload = `>${xmlRun}</w:p>`;
+    let pos, endPos, content;
+    if (pEnd.selfClose) {
+      pos = pEnd.index + pEnd.length - 2;
+      endPos = pEnd.index + pEnd.length;
+      content = `>${task.payload}</w:p>`;
     } else {
-      // Insert run just before </w:p>
-      splicePos = pEnd.index;
-      spliceEndPos = pEnd.index;
-      payload = xmlRun;
+      pos = pEnd.index;
+      endPos = pEnd.index;
+      content = task.payload;
     }
 
-    if (!groupedTasks[splicePos]) {
-      groupedTasks[splicePos] = { splicePos, spliceEndPos, payload: '' };
-    }
-    groupedTasks[splicePos].payload += payload;
+    if (!grouped[pos]) grouped[pos] = { pos, endPos, content: '' };
+    grouped[pos].content += content;
   }
 
-  // Sort back-to-front so earlier splices don't shift later indices
-  const sortedSplices = Object.values(groupedTasks).sort((a, b) => b.splicePos - a.splicePos);
-
-  let outputXml = xmlString;
-  for (const splice of sortedSplices) {
-    outputXml = outputXml.substring(0, splice.splicePos) + splice.payload + outputXml.substring(splice.spliceEndPos);
+  // Apply back-to-front
+  const splices = Object.values(grouped).sort((a, b) => b.pos - a.pos);
+  let out = xmlString;
+  for (const s of splices) {
+    out = out.substring(0, s.pos) + s.content + out.substring(s.endPos);
   }
 
-  // Repackage into zip
-  zip.file('word/document.xml', outputXml);
-  const base64 = await zip.generateAsync({ type: 'base64' });
-  return base64;
+  zip.file('word/document.xml', out);
+  return await zip.generateAsync({ type: 'base64' });
 }
 
 /**
- * Escape XML special characters to prevent document corruption.
+ * Escape XML special characters.
  */
 function escapeXml(str) {
   return str

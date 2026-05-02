@@ -15,6 +15,13 @@ export default function SaveDialog({ onClose }) {
     session.docDescription || extractDocDescription(doc.fileName)
   );
   const [isSaving, setIsSaving] = useState(false);
+  const [appendMode, setAppendMode] = useState(false);
+
+  // Detect if this document type supports appending (e.g., support notes)
+  const isAppendable = useMemo(() => {
+    const name = (doc.fileName || '').toLowerCase();
+    return name.includes('support') || name.includes('note') || name.includes('log') || name.includes('journal');
+  }, [doc.fileName]);
 
   const previewFilename = useMemo(() => {
     return generateFilename(tenantName || 'Tenant', docDescription || 'Document');
@@ -130,11 +137,39 @@ export default function SaveDialog({ onClose }) {
             <p className="text-sm font-mono text-amber-400 break-all">{previewFilename}</p>
           </div>
 
+          {/* Append Mode Toggle (only for appendable docs) */}
+          {isAppendable && (
+            <div className="bg-purple-500/5 border border-purple-500/10 rounded-lg p-3">
+              <label className="flex items-center justify-between cursor-pointer">
+                <div className="flex items-center gap-2">
+                  <svg className="w-4 h-4 text-purple-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  <div>
+                    <p className="text-sm font-medium text-white/70">Append Mode</p>
+                    <p className="text-xs text-white/30">Add to existing document instead of creating new</p>
+                  </div>
+                </div>
+                <div
+                  onClick={() => setAppendMode(!appendMode)}
+                  className={`w-10 h-5 rounded-full transition-colors duration-200 flex items-center px-0.5 cursor-pointer ${
+                    appendMode ? 'bg-purple-500' : 'bg-navy-600'
+                  }`}
+                >
+                  <div className={`w-4 h-4 rounded-full bg-white shadow transition-transform duration-200 ${
+                    appendMode ? 'translate-x-5' : 'translate-x-0'
+                  }`} />
+                </div>
+              </label>
+            </div>
+          )}
+
           {/* Stats */}
           <div className="flex items-center gap-4 text-xs text-white/30">
             <span>{Object.keys(insertions).length} fields filled</span>
             <span>•</span>
             <span>{auditTrail.length} recordings made</span>
+            {appendMode && <><span>•</span><span className="text-purple-400">Append mode</span></>}
           </div>
         </div>
 

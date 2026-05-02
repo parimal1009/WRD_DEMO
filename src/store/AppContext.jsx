@@ -11,6 +11,7 @@ const initialState = {
     fieldMap: {},
     originalBuffer: null,
     isLoaded: false,
+    isAppendable: false, // Whether this doc supports append mode
   },
   
   // Active recording state
@@ -82,6 +83,8 @@ const ActionTypes = {
   
   // Insertions
   INSERT_TEXT: 'INSERT_TEXT',
+  INSERT_IMAGE: 'INSERT_IMAGE',
+  INSERT_SIGNATURE: 'INSERT_SIGNATURE',
   REMOVE_INSERTION: 'REMOVE_INSERTION',
   CLEAR_INSERTIONS: 'CLEAR_INSERTIONS',
   
@@ -216,6 +219,36 @@ function appReducer(state, action) {
       return {
         ...state,
         insertions: { ...state.insertions, [action.payload.fieldId]: action.payload.text },
+      };
+
+    case ActionTypes.INSERT_IMAGE:
+      return {
+        ...state,
+        insertions: {
+          ...state.insertions,
+          [action.payload.fieldId]: {
+            type: 'image',
+            dataUrl: action.payload.dataUrl,
+            width: action.payload.width || 200,
+            height: action.payload.height || 150,
+            label: action.payload.label || 'Photo',
+          },
+        },
+      };
+
+    case ActionTypes.INSERT_SIGNATURE:
+      return {
+        ...state,
+        insertions: {
+          ...state.insertions,
+          [action.payload.fieldId]: {
+            type: 'signature',
+            dataUrl: action.payload.dataUrl,
+            width: action.payload.width || 180,
+            height: action.payload.height || 60,
+            label: 'Electronic Signature',
+          },
+        },
       };
       
     case ActionTypes.REMOVE_INSERTION: {

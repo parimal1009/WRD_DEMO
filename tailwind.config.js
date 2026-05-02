@@ -5,6 +5,12 @@ export default {
     "./src/**/*.{js,ts,jsx,tsx}",
   ],
   darkMode: 'class',
+  safelist: [
+    'text-amber-400', 'border-amber-400', 'bg-amber-400/5',
+    'text-blue-400', 'border-blue-400', 'bg-blue-400/5',
+    'text-green-400', 'border-green-400', 'bg-green-400/5',
+    'text-purple-400', 'border-purple-400', 'bg-purple-400/5',
+  ],
   theme: {
     extend: {
       colors: {
